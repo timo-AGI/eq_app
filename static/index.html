@@ -64,7 +64,7 @@
 <div class="row">
   <div>
     <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
-    <input type="range" id="alpha" min="0" max="10" step="0.05" value="1" oninput="sync('alpha')"/>
+    <input type="range" id="alpha" min="0" max="3" step="0.05" value="1" oninput="sync('alpha')"/>
   </div>
   <div>
     <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
@@ -114,9 +114,9 @@
   <div class="imgCard">
     <div class="imgTitle">
       <strong>Original</strong>
-      <label><input type="checkbox" id="overlayOrig" checked/> overlay parameters</label>
+      <!-- No overlay checkbox; original never shows overlay -->
     </div>
-    <div class="overlayBox" id="overlayBoxOrig"></div>
+    <!-- No overlayBox for original -->
     <img id="imgOriginal" alt="Original"/>
   </div>
 
@@ -372,28 +372,30 @@ async function process(){
     const dlMod = document.getElementById("downloadLinkMod");
     dlMod.href = modUrl; dlMod.download = "modulated.png"; dlMod.style.display = "inline";
 
-    // overlays (auto on after process)
-    const params = data.params || {};
-    const overlayText =
-      `max_kernel: ${params.max_kernel}\n` +
-      `sigma: ${Number(params.sigma_perc).toFixed(2)}\n` +
-      `alpha: ${Number(params.alpha).toFixed(2)}\n` +
-      `gamma: ${Number(params.gamma).toFixed(2)}\n` +
-      `band_sign: ${params.band_sign}\n` +
-      `preserve_mean: ${params.preserve_mean}\n` +
-      `N: ${params.n_controls}\n` +
-      `gains: ${params.gains_csv}`;
+    // overlays (ONLY on Equalized and Modulated)
+    const p = data.params || {};
 
-    setOverlay("Orig",  overlayText, document.getElementById("overlayOrig").checked);
-    setOverlay("Eq",    overlayText, document.getElementById("overlayEq").checked);
-    setOverlay("Mod",   overlayText, document.getElementById("overlayMod").checked);
+    // Equalization-only text
+    const eqText =
+      `max_kernel: ${p.max_kernel}\n` +
+      `sigma: ${Number(p.sigma_perc).toFixed(2)}\n` +
+      `alpha: ${Number(p.alpha).toFixed(2)}\n` +
+      `gamma: ${Number(p.gamma).toFixed(2)}\n` +
+      `band_sign: ${p.band_sign}\n` +
+      `preserve_mean: ${p.preserve_mean}`;
+
+    // Equalization + Modulation text
+    const modText =
+      eqText + `\n` +
+      `N: ${p.n_controls}\n` +
+      `gains: ${p.gains_csv}`;
+
+    setOverlayEq(eqText, document.getElementById("overlayEq").checked);
+    setOverlayMod(modText, document.getElementById("overlayMod").checked);
 
     // hook toggles
-    ["Orig","Eq","Mod"].forEach(kind=>{
-      document.getElementById("overlay"+kind).onchange = (e)=>{
-        setOverlay(kind, overlayText, e.target.checked);
-      };
-    });
+    document.getElementById("overlayEq").onchange = (e)=> setOverlayEq(eqText, e.target.checked);
+    document.getElementById("overlayMod").onchange = (e)=> setOverlayMod(modText, e.target.checked);
 
   }catch(err){
     setMsg("Error: " + (err?.message || String(err)));
@@ -403,8 +405,13 @@ async function process(){
   }
 }
 
-function setOverlay(kind, text, show){
-  const box = document.getElementById("overlayBox"+kind);
+function setOverlayEq(text, show){
+  const box = document.getElementById("overlayBoxEq");
+  box.textContent = text;
+  box.style.display = show ? "block" : "none";
+}
+function setOverlayMod(text, show){
+  const box = document.getElementById("overlayBoxMod");
   box.textContent = text;
   box.style.display = show ? "block" : "none";
 }
