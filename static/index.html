@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Adaptive Image Equalizer</title>
+  <style>
+    body { font-family: system-ui, Arial; max-width: 980px; margin: 24px auto; padding: 0 12px; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; margin:12px 0; }
+    label { display:block; font-size:12px; opacity:.8; }
+    input[type="number"] { width:120px; }
+    .card { padding:12px; border:1px solid #e5e5e5; border-radius:10px; }
+    img { max-width:100%; height:auto; border-radius:8px; }
+    button { padding:8px 14px; border-radius:8px; border:1px solid #bbb; background:#f7f7f7; cursor:pointer; }
+    button:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <h2>Adaptive Image Equalizer</h2>
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Upload image</label>
+        <input type="file" id="fileInput" accept="image/*"/>
+      </div>
+      <div>
+        <label>max_kernel (odd ≥3)</label>
+        <input type="number" id="max_kernel" value="63" step="2" min="3" max="127"/>
+      </div>
+      <div>
+        <label>sigma_perc</label>
+        <input type="number" id="sigma_perc" value="0.33" step="0.01" min="0.05" max="0.8"/>
+      </div>
+      <div>
+        <label>alpha</label>
+        <input type="number" id="alpha" value="1.0" step="0.05" min="0" max="3"/>
+      </div>
+      <div>
+        <label>gamma</label>
+        <input type="number" id="gamma" value="1.2" step="0.05" min="0.5" max="3"/>
+      </div>
+      <div>
+        <label>band_sign</label>
+        <select id="band_sign">
+          <option value="dog" selected>dog</option>
+          <option value="literal">literal</option>
+        </select>
+      </div>
+      <div>
+        <label>preserve_mean</label>
+        <input type="checkbox" id="preserve_mean" checked/>
+      </div>
+    </div>
+    <div class="row">
+      <button onclick="process()">Process</button>
+      <a id="downloadLink" style="display:none; margin-left:8px;">Download result</a>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3>Result</h3>
+    <img id="resultImg" alt="Processed image will appear here"/>
+  </div>
+
+<script>
+async function process() {
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) { alert("Please choose an image."); return; }
+
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("max_kernel", document.getElementById("max_kernel").value);
+  fd.append("sigma_perc", document.getElementById("sigma_perc").value);
+  fd.append("alpha", document.getElementById("alpha").value);
+  fd.append("gamma", document.getElementById("gamma").value);
+  fd.append("band_sign", document.getElementById("band_sign").value);
+  fd.append("preserve_mean", document.getElementById("preserve_mean").checked ? "true" : "false");
+
+  const res = await fetch("/process", { method: "POST", body: fd });
+  if (!res.ok) { alert("Error: " + (await res.text())); return; }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const img = document.getElementById("resultImg");
+  img.src = url;
+
+  const dl = document.getElementById("downloadLink");
+  dl.href = url;
+  dl.download = "output_equalized.png";
+  dl.textContent = "Download result";
+  dl.style.display = "inline-block";
+}
+</script>
+</body>
+</html>
