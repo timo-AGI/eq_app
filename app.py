@@ -12,6 +12,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def index():
     return FileResponse("static/index.html")
 
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
 # ---------- Adaptive Equalizer Core ----------
 def _to_float(img: np.ndarray):
     info = {"dtype": img.dtype, "scale": 1.0}
@@ -66,7 +70,6 @@ def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="
     ks=build_kernel_list(max_kernel)
     bands=compute_bands(f,ks,sigma_perc,sign)
     ws=inverse_weights(compute_variations(f,ks),gamma)
-    out=f.copy().astype(np.float32)
     total=np.zeros_like(f)
     for b,w in zip(bands,ws):
         if f.ndim==3 and w.ndim==2: w=w[...,None]
@@ -82,6 +85,8 @@ def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="
 # ---------- API ----------
 def process_image(buf,max_kernel,sigma_perc,alpha,gamma,sign,preserve):
     img=cv2.imdecode(np.frombuffer(buf,np.uint8),cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Failed to decode image (unsupported format or empty).")
     out=apply_equalizer(img,max_kernel,sigma_perc,alpha,gamma,sign,preserve)
     tmp=tempfile.NamedTemporaryFile(delete=False,suffix=".png")
     cv2.imwrite(tmp.name,out); return tmp.name
