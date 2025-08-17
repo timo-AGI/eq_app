@@ -7,27 +7,42 @@ app = FastAPI()
 
 from starlette.middleware.cors import CORSMiddleware
 
-# (optional) if you ever need CORS for APIs; safe to keep
+# (optional CORS; fine to keep wide-open for now)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can tighten to your domains later
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# allow embedding from your Wix site/domain
+# Allow embedding from your Wix site(s)
 @app.middleware("http")
 async def add_frame_headers(request, call_next):
     resp = await call_next(request)
-    # Let your Wix site frame this app
+
+    # Remove any existing X-Frame-Options that could block embedding
+    # (Render/proxies sometimes inject DENY/SAMEORIGIN)
+    try:
+        resp.headers.pop("x-frame-options")
+        resp.headers.pop("X-Frame-Options")
+    except KeyError:
+        pass
+
+    # Allow your Wix site to be an ancestor (i.e., to frame this app)
+    # Include both wixsite.com preview and your own domain.
     resp.headers["Content-Security-Policy"] = (
-        "frame-ancestors 'self' https://*.wixsite.com https://fourierimagelab.com"
+        "frame-ancestors 'self' "
+        "https://*.wixsite.com "
+        "https://*.wixstudio.io "
+        "https://fourierimagelab.com "
+        "https://www.fourierimagelab.com"
     )
-    # (X-Frame-Options is deprecated but doesn't hurt for older browsers)
-    resp.headers["X-Frame-Options"] = "ALLOW-FROM https://fourierimagelab.com"
+
+    # Old header (deprecated) — we simply omit it; some browsers ignore ALLOW-FROM.
+    # resp.headers["X-Frame-Options"] = "ALLOW-FROM https://fourierimagelab.com"
+
     return resp
-    
 
 # Serve static and homepage
 app.mount("/static", StaticFiles(directory="static"), name="static")
