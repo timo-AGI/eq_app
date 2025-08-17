@@ -5,6 +5,30 @@ import cv2, numpy as np, base64
 
 app = FastAPI()
 
+from starlette.middleware.cors import CORSMiddleware
+
+# (optional) if you ever need CORS for APIs; safe to keep
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # you can tighten to your domains later
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# allow embedding from your Wix site/domain
+@app.middleware("http")
+async def add_frame_headers(request, call_next):
+    resp = await call_next(request)
+    # Let your Wix site frame this app
+    resp.headers["Content-Security-Policy"] = (
+        "frame-ancestors 'self' https://*.wixsite.com https://fourierimagelab.com"
+    )
+    # (X-Frame-Options is deprecated but doesn't hurt for older browsers)
+    resp.headers["X-Frame-Options"] = "ALLOW-FROM https://fourierimagelab.com"
+    return resp
+    
+
 # Serve static and homepage
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
