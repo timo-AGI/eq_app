@@ -4,83 +4,125 @@
   <meta charset="utf-8"/>
   <title>Adaptive Equalizer</title>
   <style>
-    body { font-family: Arial; max-width:900px; margin:20px auto; }
-    .row { display:flex; gap:20px; margin:10px 0; flex-wrap:wrap; }
-    label { font-size:12px; display:block; }
-    input[type=range]{ width:220px; }
-    img { max-width:100%; margin-top:10px; border-radius:6px; }
-    button{padding:6px 12px;}
+    body { font-family: Arial, system-ui; max-width: 980px; margin: 24px auto; padding: 0 12px; }
+    .row { display:flex; gap:20px; margin:12px 0; flex-wrap:wrap; align-items:center; }
+    label { font-size:12px; display:block; opacity:.85; }
+    input[type=range]{ width:240px; }
+    img { max-width:100%; border-radius:6px; }
+    button{padding:8px 14px;}
+    #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
+    .val { min-width: 42px; display:inline-block; text-align:right; }
   </style>
 </head>
 <body>
   <h2>Adaptive Equalizer</h2>
-  <div>
-    <input type="file" id="fileInput" accept="image/*" onchange="preview()"/>
-  </div>
+
   <div class="row">
     <div>
-      <label>alpha <span id="alpha_val">1.0</span></label>
+      <label>Upload image</label>
+      <input type="file" id="fileInput" accept="image/*" onchange="preview()"/>
+    </div>
+    <div>
+      <label>band_sign</label>
+      <select id="band_sign">
+        <option value="dog" selected>dog</option>
+        <option value="literal">literal</option>
+      </select>
+    </div>
+    <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
+  </div>
+
+  <div class="row">
+    <div>
+      <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
       <input type="range" id="alpha" min="0" max="3" step="0.05" value="1" oninput="sync('alpha')"/>
     </div>
     <div>
-      <label>gamma <span id="gamma_val">1.2</span></label>
+      <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
       <input type="range" id="gamma" min="0.5" max="3" step="0.05" value="1.2" oninput="sync('gamma')"/>
     </div>
   </div>
+
   <div class="row">
     <div>
-      <label>sigma <span id="sigma_val">0.33</span></label>
+      <label>sigma_perc: <span id="sigma_val" class="val">0.33</span></label>
       <input type="range" id="sigma_perc" min="0.05" max="0.8" step="0.01" value="0.33" oninput="sync('sigma_perc')"/>
     </div>
     <div>
-      <label>max_kernel <span id="mk_val">63</span></label>
+      <label>max_kernel (odd ≥3): <span id="mk_val" class="val">63</span></label>
       <input type="range" id="max_kernel" min="3" max="127" step="2" value="63" oninput="sync('max_kernel')"/>
     </div>
   </div>
+
   <div class="row">
-    <select id="band_sign">
-      <option value="dog">dog</option>
-      <option value="literal">literal</option>
-    </select>
-    <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
+    <button onclick="process()">Process</button>
+    <a id="downloadLink" style="display:none;margin-left:8px;">Download</a>
   </div>
-  <button onclick="process()">Process</button>
-  <a id="downloadLink" style="display:none;margin-left:8px;">Download</a>
+
+  <div id="msg"></div>
+
   <div>
     <h3>Preview</h3>
     <img id="previewImg" style="display:none"/>
     <h3>Result</h3>
     <img id="resultImg"/>
   </div>
+
 <script>
+function apiUrl(p){ // build relative URL (works under subpaths)
+  return new URL(p, window.location.href).toString();
+}
+function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
 function sync(id){
-  let v=document.getElementById(id).value;
-  document.getElementById(id+'_val').innerText=+v;
+  let v = document.getElementById(id).value;
+  document.getElementById(
+    id==='sigma_perc' ? 'sigma_val' :
+    id==='max_kernel' ? 'mk_val' :
+    id + '_val'
+  ).innerText = (id==='max_kernel') ? v : (+v).toFixed(2);
 }
 function preview(){
   let f=document.getElementById("fileInput").files[0];
   if(!f) return;
   let url=URL.createObjectURL(f);
-  document.getElementById("previewImg").src=url;
-  document.getElementById("previewImg").style.display="block";
+  let img=document.getElementById("previewImg");
+  img.src=url; img.style.display="block";
+  setMsg('');
 }
 async function process(){
-  let f=document.getElementById("fileInput").files[0];
-  if(!f){alert("Choose an image");return;}
-  let fd=new FormData();
-  fd.append("file",f);
-  fd.append("alpha",alpha.value);
-  fd.append("gamma",gamma.value);
-  fd.append("sigma_perc",sigma_perc.value);
-  fd.append("max_kernel",max_kernel.value);
-  fd.append("band_sign",band_sign.value);
-  fd.append("preserve_mean",preserve_mean.checked?"true":"false");
-  let r=await fetch("/api/process",{method:"POST",body:fd});
-  if(!r.ok){alert("Error:"+await r.text());return;}
-  let blob=await r.blob(); let url=URL.createObjectURL(blob);
-  resultImg.src=url;
-  let dl=document.getElementById("downloadLink");
-  dl.href=url; dl.download="result.png"; dl.style.display="inline";
+  try{
+    setMsg('');
+    let f=document.getElementById("fileInput").files[0];
+    if(!f){ setMsg("Choose an image first."); return; }
+
+    // Optional: quick backend health check
+    try {
+      const h = await fetch(apiUrl('api/health'));
+      if(!h.ok){ setMsg("Backend not ready yet. Try again in a moment."); return; }
+    } catch (e) {
+      setMsg("Cannot reach backend. Try again shortly."); return;
+    }
+
+    let fd=new FormData();
+    fd.append("file",f);
+    fd.append("alpha",alpha.value);
+    fd.append("gamma",gamma.value);
+    fd.append("sigma_perc",sigma_perc.value);
+    fd.append("max_kernel",max_kernel.value);
+    fd.append("band_sign",band_sign.value);
+    fd.append("preserve_mean",preserve_mean.checked?"true":"false");
+
+    let r=await fetch(apiUrl('api/process'),{method:"POST",body:fd});
+    if(!r.ok){ setMsg("Error: "+await r.text()); return; }
+
+    let blob=await r.blob(); let url=URL.createObjectURL(blob);
+    resultImg.src=url;
+
+    let dl=document.getElementById("downloadLink");
+    dl.href=url; dl.download="result.png"; dl.style.display="inline";
+  }catch(err){
+    setMsg("Unexpected error: "+(err?.message||err));
+  }
 }
 </script>
 </body>
