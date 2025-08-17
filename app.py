@@ -28,7 +28,7 @@ def head_health():
 FIXED_SIGMA_PERC = 0.05
 FIXED_MAX_KERNEL = 25
 
-# ----------------- Equalizer core -----------------
+# ----------------- Core helpers -----------------
 def _to_float(img: np.ndarray):
     info = {"dtype": img.dtype, "scale": 1.0}
     if img.dtype == np.uint8:
@@ -60,6 +60,7 @@ def build_kernel_list(max_kernel):
     return list(range(3, max_kernel+1, 2))
 
 def compute_bands(img,kernels,sigma_perc,sign):
+    """Return list of band images: [3x3 band, 3-5 band, 5-7 band, ...]."""
     blurs=[gaussian_blur(img,k,sigma_perc) for k in kernels]
     bands=[img-blurs[0]]
     for i in range(1,len(kernels)):
@@ -67,6 +68,7 @@ def compute_bands(img,kernels,sigma_perc,sign):
     return bands
 
 def compute_variations(img,kernels):
+    """Local std per scale, then bandwise deltas of std."""
     stds=[local_std(img,k) for k in kernels]
     vars_=[stds[0]]
     for i in range(1,len(stds)):
@@ -74,20 +76,35 @@ def compute_variations(img,kernels):
     return vars_
 
 def inverse_weights(vars_,gamma=1.0):
+    """Make inverse-variance weights per band; normalize each band to max=1, then raise to gamma."""
     ws=[]
     for v in vars_:
         inv=1.0/(1e-4+v); m=float(inv.max()) if inv.size else 0.0
         ws.append(((inv/m)**gamma).astype(np.float32) if m>0 else np.zeros_like(v, dtype=np.float32))
     return ws
 
-def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="dog",
-                    preserve_mean=True, per_band_gain=1.0):
+def apply_pipeline(
+    img,
+    *,
+    max_kernel,
+    sigma_perc,
+    band_sign,
+    preserve_mean,
+    use_inverse,        # True → equalization; False → no inverse weights
+    gamma,
+    alpha,
+    per_band_gain       # scalar or list of length n_bands
+):
     f,info=_to_float(img)
-    ks=build_kernel_list(max_kernel)
-    bands=compute_bands(f,ks,sigma_perc,sign)
-    ws=inverse_weights(compute_variations(f,ks),gamma)
+    kernels=build_kernel_list(max_kernel)
+    bands=compute_bands(f,kernels,sigma_perc,band_sign)
 
-    # per_band_gain: scalar or array (len == len(bands))
+    if use_inverse:
+        ws=inverse_weights(compute_variations(f,kernels),gamma)
+    else:
+        ws=[np.ones_like(b, dtype=np.float32 if b.dtype!=np.float32 else b.dtype) for b in bands]
+
+    # gains → list same length as bands, or scalar
     if isinstance(per_band_gain,(int,float)):
         gains=[float(per_band_gain)]*len(bands)
     else:
@@ -98,24 +115,24 @@ def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="
     total=np.zeros_like(f,dtype=np.float32)
     for b,w,g in zip(bands,ws,gains):
         if f.ndim==3 and w.ndim==2: w=w[...,None]
-        total+= (g*w*b).astype(np.float32)
-    total*=alpha
+        total += (g*w*b).astype(np.float32)
+
+    total *= alpha  # alpha will be 1.0 for modulation-only
 
     if preserve_mean:
-        if f.ndim==2: total-=total.mean()
+        if f.ndim==2: total -= total.mean()
         else:
-            for c in range(f.shape[2]): total[...,c]-=total[...,c].mean()
+            for c in range(f.shape[2]): total[...,c] -= total[...,c].mean()
 
     out=np.clip(f+total,0,1)
-    return _from_float(out,info)
+    return _from_float(out,info), kernels
 
 def expand_gains(n_controls, gains_csv, n_bands):
     vals=[v for v in gains_csv.replace(' ','').split(',') if v!='']
     arr=np.array([float(x) for x in vals], dtype=np.float32)
     if len(arr)!=n_controls:
         raise ValueError(f"Expected {n_controls} gains, got {len(arr)}")
-    # UPDATED: allow 0..10
-    arr=np.clip(arr, 0.0, 10.0)
+    arr=np.clip(arr, 0.0, 10.0)  # gain range 0..10
     if n_controls==n_bands:
         return arr.tolist()
     x_ctrl = np.linspace(0, n_bands-1, n_controls, dtype=np.float32)
@@ -136,15 +153,22 @@ ALLOWED_TYPES = {"image/jpeg","image/png","image/webp"}
 @app.post("/api/process")
 async def api_process(
     file: UploadFile=File(...),
-    alpha:float=Form(1.0),
-    gamma:float=Form(1.2),
-    band_sign:str=Form("dog"),
-    preserve_mean:bool=Form(True),
-    do_modulation:bool=Form(False),
-    n_controls:int=Form(5),
-    gains_csv:str=Form("1,1,1,1,1"),
+    # toggles
+    do_equalize: bool = Form(False),
+    do_modulation: bool = Form(False),
+    # equalization params (used iff do_equalize)
+    alpha: float = Form(1.0),
+    gamma: float = Form(1.2),
+    band_sign: str = Form("dog"),
+    preserve_mean: bool = Form(True),
+    # modulation params (used iff do_modulation)
+    n_controls: int = Form(5),
+    gains_csv: str = Form("1,1,1,1,1"),
 ):
     try:
+        if (not do_equalize) and (not do_modulation):
+            return JSONResponse({"error": "Enable equalization and/or modulation to process."}, status_code=400)
+
         if file.content_type not in ALLOWED_TYPES:
             return JSONResponse({"error": f"Unsupported type {file.content_type}. Use JPG/PNG/WEBP."}, status_code=415)
         buf=await file.read()
@@ -159,22 +183,45 @@ async def api_process(
 
         if do_modulation:
             gains_full = expand_gains(n_controls, gains_csv, n_bands)
-            out_img = apply_equalizer(
+        else:
+            gains_full = 1.0
+
+        if do_equalize and do_modulation:
+            out_img, kernels = apply_pipeline(
                 img,
                 max_kernel=FIXED_MAX_KERNEL,
                 sigma_perc=FIXED_SIGMA_PERC,
-                alpha=alpha, gamma=gamma,
-                sign=band_sign, preserve_mean=preserve_mean,
+                band_sign=band_sign,
+                preserve_mean=preserve_mean,
+                use_inverse=True,
+                gamma=gamma,
+                alpha=alpha,
                 per_band_gain=gains_full
             )
-        else:
-            out_img = apply_equalizer(
+        elif do_equalize:
+            out_img, kernels = apply_pipeline(
                 img,
                 max_kernel=FIXED_MAX_KERNEL,
                 sigma_perc=FIXED_SIGMA_PERC,
-                alpha=alpha, gamma=gamma,
-                sign=band_sign, preserve_mean=preserve_mean,
+                band_sign=band_sign,
+                preserve_mean=preserve_mean,
+                use_inverse=True,
+                gamma=gamma,
+                alpha=alpha,
                 per_band_gain=1.0
+            )
+        else:
+            # modulation only: no inverse, alpha=1, gamma ignored
+            out_img, kernels = apply_pipeline(
+                img,
+                max_kernel=FIXED_MAX_KERNEL,
+                sigma_perc=FIXED_SIGMA_PERC,
+                band_sign="dog",          # band_sign irrelevant here, keep DoG default
+                preserve_mean=preserve_mean,
+                use_inverse=False,
+                gamma=1.0,
+                alpha=1.0,
+                per_band_gain=gains_full
             )
 
         return {
@@ -184,11 +231,14 @@ async def api_process(
             "params": {
                 "max_kernel": FIXED_MAX_KERNEL,
                 "sigma_perc": FIXED_SIGMA_PERC,
-                "alpha": alpha,
-                "gamma": gamma,
-                "band_sign": band_sign,
-                "preserve_mean": bool(preserve_mean),
+                "do_equalize": bool(do_equalize),
                 "do_modulation": bool(do_modulation),
+                # only provided when EQ is used (for overlay)
+                "alpha": alpha if do_equalize else None,
+                "gamma": gamma if do_equalize else None,
+                "band_sign": band_sign if do_equalize else None,
+                "preserve_mean": bool(preserve_mean),
+                # modulation overlay
                 "n_controls": n_controls if do_modulation else None,
                 "gains_csv": gains_csv if do_modulation else None,
             }
