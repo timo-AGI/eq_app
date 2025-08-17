@@ -1,257 +1,192 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>Adaptive Equalizer</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-  body { font-family: Arial, system-ui; max-width: 1040px; margin: 24px auto; padding: 0 12px; }
-  .row { display:flex; gap:20px; margin:12px 0; flex-wrap:wrap; align-items:center; }
-  label { font-size:12px; display:block; opacity:.85; }
-  input[type=range]{ width:240px; }
-  img { max-width:100%; border-radius:6px; }
-  button{padding:8px 14px; cursor:pointer;}
-  button[disabled]{ opacity:.6; cursor:not-allowed;}
-  #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
-  .val { min-width: 42px; display:inline-block; text-align:right; }
-  #progressWrap { display:none; align-items:center; gap:10px; }
-  .spinner { width:16px; height:16px; border:2px solid #ccc; border-top-color:#333; border-radius:50%; animation:spin .8s linear infinite;}
-  @keyframes spin { to{ transform:rotate(360deg)} }
+from fastapi import FastAPI, File, UploadFile, Form, Response
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+import cv2, numpy as np, tempfile, time, base64
 
-  /* Modulation section */
-  #modWrap{ border:1px solid #e5e5e5; border-radius:10px; padding:12px; }
-  #curveArea{ display:flex; flex-direction:column; align-items:center; }
-  #curveCanvas{ width: 800px; height: 220px; }
-  /* Sliders aligned under curve points */
-  #slidersRow{ display:flex; justify-content:space-between; width:800px; margin-top:14px; }
-  .knobCol{ display:flex; flex-direction:column; align-items:center; user-select:none; }
-  .knobCol input[type=range]{
-    writing-mode: bt-lr; -webkit-appearance: slider-vertical;
-    height: 140px; width: 28px;
-  }
-  .knobLabel{ font-size:11px; margin-top:6px; }
-</style>
-</head>
-<body>
-<h2>Adaptive Equalizer</h2>
+app = FastAPI()
 
-<div class="row">
-  <div>
-    <label>Upload image</label>
-    <input type="file" id="fileInput" accept="image/*" onchange="preview()"/>
-  </div>
-  <div>
-    <label>band_sign</label>
-    <select id="band_sign">
-      <option value="dog" selected>dog</option>
-      <option value="literal">literal</option>
-    </select>
-  </div>
-  <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
-</div>
+# Serve static and homepage
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-<div class="row">
-  <div>
-    <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
-    <input type="range" id="alpha" min="0" max="3" step="0.05" value="1" oninput="sync('alpha')"/>
-  </div>
-  <div>
-    <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
-    <input type="range" id="gamma" min="0.5" max="3" step="0.05" value="1.2" oninput="sync('gamma')"/>
-  </div>
-</div>
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")
 
-<div class="row">
-  <div>
-    <label>sigma_perc: <span id="sigma_val" class="val">0.33</span></label>
-    <input type="range" id="sigma_perc" min="0.05" max="0.8" step="0.01" value="0.33" oninput="sync('sigma_perc')"/>
-  </div>
-  <div>
-    <label>max_kernel (odd ≥3): <span id="mk_val" class="val">63</span></label>
-    <input type="range" id="max_kernel" min="3" max="127" step="2" value="63" oninput="sync('max_kernel')"/>
-  </div>
-</div>
+@app.get("/api/health")
+def health():
+    return {"ok": True}
 
-<!-- Modulation controls -->
-<div id="modWrap">
-  <div class="row" style="justify-content:space-between; align-items:center;">
-    <strong>Band Modulation</strong>
-    <div>
-      <label>N knobs (3..10)</label>
-      <input type="number" id="n_controls" min="3" max="10" step="1" value="5" style="width:64px;"/>
-      <button onclick="applyKnobs()">Apply</button>
-    </div>
-  </div>
+@app.head("/")
+def head_root():
+    return Response(status_code=200)
 
-  <div id="curveArea">
-    <canvas id="curveCanvas" width="800" height="220"></canvas>
-    <div id="slidersRow"><!-- sliders inserted dynamically --></div>
-  </div>
-</div>
+@app.head("/api/health")
+def head_health():
+    return Response(status_code=200)
 
-<div class="row">
-  <button id="processBtn" onclick="process()">Process</button>
-  <a id="downloadLink" style="display:none;margin-left:8px;">Download</a>
-  <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
-</div>
+# ----------------- Equalizer core -----------------
+def _to_float(img: np.ndarray):
+    info = {"dtype": img.dtype, "scale": 1.0}
+    if img.dtype == np.uint8:
+        return img.astype(np.float32)/255.0, {"dtype": img.dtype, "scale":255}
+    if img.dtype == np.uint16:
+        return img.astype(np.float32)/65535.0, {"dtype": img.dtype, "scale":65535}
+    return img.astype(np.float32), info
 
-<div id="msg"></div>
+def _from_float(img: np.ndarray, info: dict):
+    scale = info.get("scale",1.0); dtype = info["dtype"]
+    if dtype == np.uint8:
+        return np.clip(img*scale,0,255).astype(np.uint8)
+    if dtype == np.uint16:
+        return np.clip(img*scale,0,65535).astype(np.uint16)
+    return img.astype(np.float32)
 
-<div>
-  <h3>Preview</h3>
-  <img id="previewImg" style="display:none"/>
-  <h3>Result</h3>
-  <img id="resultImg"/>
-</div>
+def gaussian_blur(img,k,sigma_perc=0.33):
+    sigma = max(0.01, sigma_perc*((k-1)/2))
+    return cv2.GaussianBlur(img,(k,k),sigmaX=sigma,sigmaY=sigma,borderType=cv2.BORDER_REPLICATE)
 
-<script>
-function apiUrl(p){ return new URL(p, window.location.href).toString(); }
-function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
-function sync(id){
-  const v = document.getElementById(id).value;
-  const span = document.getElementById(
-    id==='sigma_perc' ? 'sigma_val' :
-    id==='max_kernel' ? 'mk_val' :
-    id + '_val'
-  );
-  if (span) span.textContent = (id==='max_kernel') ? v : (+v).toFixed(2);
-}
-function preview(){
-  setMsg('');
-  const f=document.getElementById("fileInput").files[0];
-  if(!f) return;
-  const url=URL.createObjectURL(f);
-  const img=document.getElementById("previewImg");
-  img.src=url; img.style.display="block";
-}
+def local_std(img,k):
+    mu  = cv2.boxFilter(img,-1,(k,k),normalize=True, borderType=cv2.BORDER_REFLECT)
+    mu2 = cv2.boxFilter(img*img,-1,(k,k),normalize=True, borderType=cv2.BORDER_REFLECT)
+    return np.sqrt(np.maximum(0,mu2-mu*mu)+1e-12)
 
-/* ---------- Modulation knobs + curve (Chart.js) ---------- */
-let gains = []; // length N, values [0..4]
-let chart = null;
+def build_kernel_list(max_kernel): 
+    if max_kernel < 3 or max_kernel % 2 == 0:
+        raise ValueError("max_kernel must be odd and >= 3")
+    return list(range(3, max_kernel+1, 2))
 
-function applyKnobs(){
-  const N = Math.max(3, Math.min(10, parseInt(document.getElementById('n_controls').value||5,10)));
-  gains = Array(N).fill(1.0);
-  renderSliders();
-  renderChart();
-  updateChartData();
-}
+def compute_bands(img,kernels,sigma_perc,sign):
+    blurs=[gaussian_blur(img,k,sigma_perc) for k in kernels]
+    bands=[img-blurs[0]]
+    for i in range(1,len(kernels)):
+        bands.append((blurs[i-1]-blurs[i]) if sign!="literal" else (blurs[i]-blurs[i-1]))
+    return bands
 
-function renderSliders(){
-  const row = document.getElementById('slidersRow');
-  row.innerHTML = '';
-  gains.forEach((v,i)=>{
-    const col = document.createElement('div');
-    col.className = 'knobCol';
+def compute_variations(img,kernels):
+    stds=[local_std(img,k) for k in kernels]
+    vars_=[stds[0]]
+    for i in range(1,len(stds)):
+        vars_.append(np.maximum(0,stds[i]-stds[i-1]))
+    return vars_
 
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '0'; slider.max = '4'; slider.step = '0.05';
-    slider.value = String(v);
-    slider.oninput = (e)=>{
-      gains[i] = parseFloat(e.target.value);
-      updateChartData();
-      label.textContent = `b${i+1}: ${gains[i].toFixed(2)}`;
-    };
+def inverse_weights(vars_,gamma=1.0):
+    ws=[]
+    for v in vars_:
+        inv=1.0/(1e-4+v); m=float(inv.max()) if inv.size else 0.0
+        ws.append(((inv/m)**gamma).astype(np.float32) if m>0 else np.zeros_like(v, dtype=np.float32))
+    return ws
 
-    const label = document.createElement('div');
-    label.className = 'knobLabel';
-    label.textContent = `b${i+1}: ${v.toFixed(2)}`;
+def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="dog",
+                    preserve_mean=True, per_band_gain=1.0):
+    f,info=_to_float(img)
+    ks=build_kernel_list(max_kernel)
+    bands=compute_bands(f,ks,sigma_perc,sign)
+    ws=inverse_weights(compute_variations(f,ks),gamma)
 
-    col.appendChild(slider);
-    col.appendChild(label);
-    row.appendChild(col);
-  });
-}
+    # per_band_gain: scalar or array (len == len(bands))
+    if isinstance(per_band_gain,(int,float)):
+        gains=[float(per_band_gain)]*len(bands)
+    else:
+        gains=list(per_band_gain)
+        if len(gains)!=len(bands):
+            raise ValueError(f"per_band_gain length mismatch: {len(gains)} vs {len(bands)}")
 
-function renderChart(){
-  const ctx = document.getElementById('curveCanvas').getContext('2d');
-  if (chart){ chart.destroy(); }
-  chart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: gains.map((_,i)=> `Band ${i+1}`),
-      datasets: [{
-        label: 'Modulation',
-        data: gains,
-        fill: false,
-        borderWidth: 2,
-        pointRadius: 3,
-        cubicInterpolationMode: 'monotone'
-      }]
-    },
-    options: {
-      animation: false,
-      responsive: false,
-      scales: {
-        y: { min: 0, max: 4, title:{display:true, text:'Gain (0..4)'} },
-        x: { title:{display:true, text:'Control points (first = 3x3 band, last = widest band)'} }
-      },
-      plugins: { legend: { display: false } }
-    }
-  });
-}
+    total=np.zeros_like(f,dtype=np.float32)
+    for b,w,g in zip(bands,ws,gains):
+        if f.ndim==3 and w.ndim==2: w=w[...,None]
+        total+= (g*w*b).astype(np.float32)
+    total*=alpha
 
-function updateChartData(){
-  if (!chart) return;
-  chart.data.labels = gains.map((_,i)=> `Band ${i+1}`);
-  chart.data.datasets[0].data = gains;
-  chart.update();
-}
+    if preserve_mean:
+        if f.ndim==2: total-=total.mean()
+        else:
+            for c in range(f.shape[2]): total[...,c]-=total[...,c].mean()
 
-/* ---------- Busy UI ---------- */
-function setBusy(b){
-  document.getElementById('processBtn').disabled = b;
-  document.getElementById('fileInput').disabled = b;
-  document.getElementById('progressWrap').style.display = b ? 'inline-flex' : 'none';
-}
+    out=np.clip(f+total,0,1)
+    return _from_float(out,info)
 
-/* ---------- Init ---------- */
-applyKnobs();
+# ------- Expand N control points to full per-band gains (linear) ------
+def expand_gains(n_controls, gains_csv, n_bands):
+    vals=[v for v in gains_csv.replace(' ','').split(',') if v!='']
+    arr=np.array([float(x) for x in vals], dtype=np.float32)
+    if len(arr)!=n_controls:
+        raise ValueError(f"Expected {n_controls} gains, got {len(arr)}")
+    arr=np.clip(arr, 0.0, 4.0)
 
-/* ---------- Processing ---------- */
-async function process(){
-  if (document.getElementById('processBtn').disabled) return;
+    if n_controls==n_bands:
+        return arr.tolist()
 
-  const controller = new AbortController();
-  const timeout = setTimeout(()=>controller.abort(), 180000);
-  try{
-    setMsg('');
-    const file = document.getElementById("fileInput").files[0];
-    if (!file){ setMsg("Choose an image first."); return; }
-    setBusy(true);
+    x_ctrl = np.linspace(0, n_bands-1, n_controls, dtype=np.float32)
+    x_full = np.arange(n_bands, dtype=np.float32)
+    full   = np.interp(x_full, x_ctrl, arr)
+    return full.tolist()
 
-    const gains_csv = gains.map(v=> v.toFixed(3)).join(',');
+def _encode_png_b64(img_bgr: np.ndarray) -> str:
+    ok, buf = cv2.imencode(".png", img_bgr)
+    if not ok:
+        raise RuntimeError("PNG encode failed")
+    return base64.b64encode(buf.tobytes()).decode("ascii")
 
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("alpha", alpha.value);
-    fd.append("gamma", gamma.value);
-    fd.append("sigma_perc", sigma_perc.value);
-    fd.append("max_kernel", max_kernel.value);
-    fd.append("band_sign", band_sign.value);
-    fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
-    fd.append("n_controls", String(gains.length));
-    fd.append("gains_csv", gains_csv);
+# ----------------- API -----------------
+MAX_BYTES = 12 * 1024 * 1024
+ALLOWED_TYPES = {"image/jpeg","image/png","image/webp"}
 
-    const r = await fetch(apiUrl('api/process'), { method: "POST", body: fd, signal: controller.signal });
-    if (!r.ok){
-      const text = await r.text().catch(()=>"(no details)");
-      throw new Error(text);
-    }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    document.getElementById("resultImg").src = url;
+@app.post("/api/process")
+async def api_process(
+    file: UploadFile=File(...),
+    max_kernel:int=Form(63),
+    sigma_perc:float=Form(0.33),
+    alpha:float=Form(1.0),
+    gamma:float=Form(1.2),
+    band_sign:str=Form("dog"),
+    preserve_mean:bool=Form(True),
+    n_controls:int=Form(5),
+    gains_csv:str=Form("1,1,1,1,1"),
+):
+    try:
+        if file.content_type not in ALLOWED_TYPES:
+            return JSONResponse({"error": f"Unsupported type {file.content_type}. Use JPG/PNG/WEBP."}, status_code=415)
+        buf=await file.read()
+        if not buf: return JSONResponse({"error":"Empty upload"}, status_code=400)
+        if len(buf)>MAX_BYTES: return JSONResponse({"error":"File too large (>12MB)"}, status_code=413)
 
-    const dl = document.getElementById("downloadLink");
-    dl.href = url; dl.download = "result.png"; dl.style.display = "inline";
-  }catch(err){
-    setMsg("Error: " + (err?.message || String(err)));
-  }finally{
-    clearTimeout(timeout);
-    setBusy(false);
-  }
-}
-</script>
-</body>
-</html>
+        # Decode original
+        img=cv2.imdecode(np.frombuffer(buf,np.uint8),cv2.IMREAD_COLOR)
+        if img is None: return JSONResponse({"error":"Decode failed. Use JPG/PNG/WEBP."}, status_code=400)
+
+        kernels = build_kernel_list(max_kernel)
+        n_bands = len(kernels)
+        gains_full = expand_gains(n_controls, gains_csv, n_bands)
+
+        # Process both versions
+        t0=time.time()
+        equalized = apply_equalizer(img, max_kernel, sigma_perc, alpha, gamma, band_sign, preserve_mean, per_band_gain=1.0)
+        modulated = apply_equalizer(img, max_kernel, sigma_perc, alpha, gamma, band_sign, preserve_mean, per_band_gain=gains_full)
+        dt=time.time()-t0
+        print(f"[equalizer] size={img.shape} bands={n_bands} max_k={max_kernel} took={dt:.2f}s")
+
+        # Encode as base64 (to return JSON with three images)
+        orig_b64 = _encode_png_b64(img)
+        eq_b64   = _encode_png_b64(equalized)
+        mod_b64  = _encode_png_b64(modulated)
+
+        return {
+            "original_b64": orig_b64,
+            "equalized_b64": eq_b64,
+            "modulated_b64": mod_b64,
+            "kernels": kernels,                   # e.g., [3,5,7,...,max_kernel]
+            "n_bands": n_bands,
+            "params": {
+                "max_kernel": max_kernel,
+                "sigma_perc": sigma_perc,
+                "alpha": alpha,
+                "gamma": gamma,
+                "band_sign": band_sign,
+                "preserve_mean": bool(preserve_mean),
+                "n_controls": n_controls,
+                "gains_csv": gains_csv,
+            }
+        }
+    except Exception as e:
+        print("[api_process] ERROR:", repr(e))
+        return JSONResponse({"error":str(e)}, status_code=400)
