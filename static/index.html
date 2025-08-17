@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8"/>
 <title>Adaptive Equalizer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
 <style>
-  body { font-family: Arial, system-ui; max-width: 1000px; margin: 24px auto; padding: 0 12px; }
+  body { font-family: Arial, system-ui; max-width: 1100px; margin: 24px auto; padding: 0 12px; }
   .row { display:flex; gap:20px; margin:12px 0; flex-wrap:wrap; align-items:center; }
   label { font-size:12px; display:block; opacity:.85; }
   input[type=range]{ width:240px; }
-  img { max-width:100%; border-radius:6px; }
+  img { max-width:100%; border-radius:6px; display:block; }
   button{padding:8px 14px; cursor:pointer;}
   button[disabled]{ opacity:.6; cursor:not-allowed;}
   #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
@@ -19,11 +20,27 @@
 
   /* Modulation section */
   #modWrap{ border:1px solid #e5e5e5; border-radius:10px; padding:12px; }
-  #curve { width: 680px; height: 160px; border:1px solid #ddd; border-radius:6px; background:#fafafa;}
-  #knobs{ display:flex; gap:14px; margin-top:10px; flex-wrap:wrap; align-items:flex-end;}
-  .knobCol{ display:flex; flex-direction:column; align-items:center; }
-  .knobCol input[type=range]{ writing-mode: bt-lr; -webkit-appearance: slider-vertical; height: 140px; width: 28px; }
-  .knobCol span{ font-size:11px; margin-top:6px; }
+  #curveArea{ display:flex; flex-direction:column; align-items:center; }
+  #curveCanvas{ width: 900px; height: 240px; }
+  /* Sliders aligned under curve points */
+  #slidersRow{ display:flex; justify-content:space-between; width:900px; margin-top:14px; }
+  .knobCol{ display:flex; flex-direction:column; align-items:center; user-select:none; }
+  .knobCol input[type=range]{
+    writing-mode: bt-lr; -webkit-appearance: slider-vertical;
+    height: 150px; width: 28px;
+  }
+  .knobLabel{ font-size:11px; margin-top:6px; }
+
+  /* Image grids + overlays */
+  .imgGrid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
+  .imgCard{ position:relative; border:1px solid #e5e5e5; border-radius:10px; padding:10px; }
+  .imgTitle{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .overlayBox{
+    position:absolute; top:10px; right:10px;
+    background:rgba(0,0,0,0.6); color:#fff; padding:6px 8px;
+    font-size:12px; border-radius:6px; max-width:45%; line-height:1.25;
+    display:none;
+  }
 </style>
 </head>
 <body>
@@ -76,23 +93,50 @@
       <button onclick="applyKnobs()">Apply</button>
     </div>
   </div>
-  <canvas id="curve" width="680" height="160"></canvas>
-  <div id="knobs"></div>
+
+  <div id="curveArea">
+    <canvas id="curveCanvas" width="900" height="240"></canvas>
+    <div id="slidersRow"><!-- sliders inserted dynamically --></div>
+  </div>
 </div>
 
 <div class="row">
   <button id="processBtn" onclick="process()">Process</button>
-  <a id="downloadLink" style="display:none;margin-left:8px;">Download</a>
+  <a id="downloadLinkEq" style="display:none;margin-left:8px;">Download Equalized</a>
+  <a id="downloadLinkMod" style="display:none;margin-left:8px;">Download Modulated</a>
   <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
 </div>
 
 <div id="msg"></div>
 
-<div>
-  <h3>Preview</h3>
-  <img id="previewImg" style="display:none"/>
-  <h3>Result</h3>
-  <img id="resultImg"/>
+<!-- Results grid -->
+<div class="imgGrid">
+  <div class="imgCard">
+    <div class="imgTitle">
+      <strong>Original</strong>
+      <label><input type="checkbox" id="overlayOrig" checked/> overlay parameters</label>
+    </div>
+    <div class="overlayBox" id="overlayBoxOrig"></div>
+    <img id="imgOriginal" alt="Original"/>
+  </div>
+
+  <div class="imgCard">
+    <div class="imgTitle">
+      <strong>Equalized (no modulation)</strong>
+      <label><input type="checkbox" id="overlayEq" checked/> overlay parameters</label>
+    </div>
+    <div class="overlayBox" id="overlayBoxEq"></div>
+    <img id="imgEqualized" alt="Equalized"/>
+  </div>
+
+  <div class="imgCard">
+    <div class="imgTitle">
+      <strong>Modulated</strong>
+      <label><input type="checkbox" id="overlayMod" checked/> overlay parameters</label>
+    </div>
+    <div class="overlayBox" id="overlayBoxMod"></div>
+    <img id="imgModulated" alt="Modulated"/>
+  </div>
 </div>
 
 <script>
@@ -100,11 +144,7 @@ function apiUrl(p){ return new URL(p, window.location.href).toString(); }
 function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
 function sync(id){
   const v = document.getElementById(id).value;
-  const span = document.getElementById(
-    id==='sigma_perc' ? 'sigma_val' :
-    id==='max_kernel' ? 'mk_val' :
-    id + '_val'
-  );
+  const span = document.getElementById(id==='sigma_perc' ? 'sigma_val' : id==='max_kernel' ? 'mk_val' : id + '_val');
   if (span) span.textContent = (id==='max_kernel') ? v : (+v).toFixed(2);
 }
 function preview(){
@@ -112,83 +152,157 @@ function preview(){
   const f=document.getElementById("fileInput").files[0];
   if(!f) return;
   const url=URL.createObjectURL(f);
-  const img=document.getElementById("previewImg");
-  img.src=url; img.style.display="block";
+  document.getElementById("imgOriginal").src = url; // quick preview for original
 }
 
-/* ---------- Modulation knobs + curve ---------- */
-let gains = []; // length N, values in [0,4]
+/* ---------- Modulation knobs + curve (Chart.js numeric X) ---------- */
+let gains = []; // N control points [0..4]
+let chart = null;
+let kernels = []; // full band kernel sizes from server
+let nBands = 0;
+
+// plugin to draw y=1 horizontal line
+const unityLine = {
+  id: 'unityLine',
+  afterDraw(chart, args, opts) {
+    const yScale = chart.scales.y;
+    const ctx = chart.ctx;
+    const y = yScale.getPixelForValue(1);
+    ctx.save();
+    ctx.strokeStyle = '#888';
+    ctx.setLineDash([5,4]);
+    ctx.beginPath();
+    ctx.moveTo(chart.chartArea.left, y);
+    ctx.lineTo(chart.chartArea.right, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
 
 function applyKnobs(){
   const N = Math.max(3, Math.min(10, parseInt(document.getElementById('n_controls').value||5,10)));
-  gains = Array(N).fill(1.0); // default gain = 1
-  renderKnobs();
-  drawCurve();
+  gains = Array(N).fill(1.0);
+  renderSliders();
+  renderChart();
+  updateChartData();
 }
 
-function renderKnobs(){
-  const wrap = document.getElementById('knobs');
-  wrap.innerHTML = '';
-  gains.forEach((v, i) => {
+function renderSliders(){
+  const row = document.getElementById('slidersRow');
+  row.innerHTML = '';
+  gains.forEach((v,i)=>{
     const col = document.createElement('div');
     col.className = 'knobCol';
+
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.min = '0'; slider.max = '4'; slider.step = '0.05';
     slider.value = String(v);
-    slider.oninput = (e)=>{ gains[i] = parseFloat(e.target.value); drawCurve(); };
-    const label = document.createElement('span');
+    slider.oninput = (e)=>{
+      let val = parseFloat(e.target.value);
+      // snap-to-1 when close
+      if (Math.abs(val - 1.0) < 0.05) val = 1.0;
+      gains[i] = val;
+      e.target.value = String(val);
+      label.textContent = `b${i+1}: ${gains[i].toFixed(2)}`;
+      updateChartData();
+    };
+
+    const label = document.createElement('div');
+    label.className = 'knobLabel';
     label.textContent = `b${i+1}: ${v.toFixed(2)}`;
-    slider.addEventListener('input', ()=> label.textContent = `b${i+1}: ${parseFloat(slider.value).toFixed(2)}`);
+
     col.appendChild(slider);
     col.appendChild(label);
-    wrap.appendChild(col);
+    row.appendChild(col);
   });
 }
 
-function drawCurve(){
-  const c = document.getElementById('curve');
-  const ctx = c.getContext('2d');
-  const W = c.width, H = c.height;
-  ctx.clearRect(0,0,W,H);
-
-  // axes
-  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(32, H-24); ctx.lineTo(W-8, H-24); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(32, 8); ctx.lineTo(32, H-24); ctx.stroke();
-
-  // grid & ticks for gain 0..4
-  ctx.fillStyle = '#666'; ctx.font = '11px sans-serif';
-  for (let g=0; g<=4; g++){
-    const y = mapGainToY(g, H);
-    ctx.strokeStyle='#eee'; ctx.beginPath(); ctx.moveTo(32,y); ctx.lineTo(W-8,y); ctx.stroke();
-    ctx.fillText(String(g), 8, y+3);
-  }
-
-  if (!gains.length) return;
-  // polyline across N controls
-  const N = gains.length;
-  const xs = gains.map((_,i)=> lerp(32, W-16, (N===1)?0.5:(i/(N-1))));
-  ctx.strokeStyle = '#2a6'; ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(xs[0], mapGainToY(gains[0], H));
-  for(let i=1;i<N;i++){
-    ctx.lineTo(xs[i], mapGainToY(gains[i], H));
-  }
-  ctx.stroke();
-
-  // points
-  ctx.fillStyle = '#2a6';
-  xs.forEach((x,i)=> {
-    const y = mapGainToY(gains[i], H);
-    ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill();
+function renderChart(){
+  const ctx = document.getElementById('curveCanvas').getContext('2d');
+  if (chart){ chart.destroy(); }
+  // numeric x-axis: 0..(nBands-1)
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        // full interpolated curve across all bands (will be updated later)
+        { label:'Interpolated', data: [], borderWidth:2, pointRadius:0, fill:false, tension:0.0 },
+        // control points as scatter-like line with points
+        { label:'Controls', data: [], borderWidth:2, pointRadius:3, fill:false, tension:0.0 }
+      ]
+    },
+    plugins: [unityLine],
+    options: {
+      animation: false,
+      responsive: false,
+      parsing: false,
+      scales: {
+        x: {
+          type: 'linear',
+          min: 0,
+          ticks: {
+            callback: (val) => {
+              const idx = Math.round(val);
+              if (!kernels.length) return idx;
+              // Show every 2nd or 3rd label to avoid clutter
+              if (idx % 2 === 1) return ''; 
+              return `${kernels[idx]}×${kernels[idx]}`;
+            }
+          },
+          title:{display:true, text:'Bands (by kernel size)'}
+        },
+        y: { min: 0, max: 4, title:{display:true, text:'Gain (0..4)'} }
+      },
+      plugins: { legend: { display: false } }
+    }
   });
 }
-function mapGainToY(g, H){
-  const top=8, bottom=H-24;
-  return bottom - (Math.max(0, Math.min(4, g))/4)*(bottom-top);
+
+function makeInterpolatedCurve(){
+  if (!nBands || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nBands-1, gains.length);
+  const xs = Array.from({length: nBands}, (_,i)=> i);
+  const ys = interp1(xCtrl, gains, xs);
+  return xs.map((x,i)=> ({x, y: ys[i]}));
 }
-function lerp(a,b,t){ return a + (b-a)*t; }
+
+function controlDatasetPoints(){
+  if (!nBands || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nBands-1, gains.length);
+  return xCtrl.map((x,i)=> ({x, y: gains[i]}));
+}
+
+function updateChartData(){
+  if (!chart) return;
+  // dataset 0 = interpolated full curve
+  chart.data.datasets[0].data = makeInterpolatedCurve();
+  // dataset 1 = control points
+  chart.data.datasets[1].data = controlDatasetPoints();
+  chart.update();
+}
+
+function linspace(a,b,n){
+  if (n===1) return [a];
+  const step=(b-a)/(n-1);
+  return Array.from({length:n},(_,i)=> a + i*step);
+}
+
+function interp1(x, y, xq){
+  // simple linear interpolation
+  const n = x.length;
+  const res = [];
+  for (const q of xq){
+    if (q <= x[0]) { res.push(y[0]); continue; }
+    if (q >= x[n-1]) { res.push(y[n-1]); continue; }
+    // find interval
+    let j=1; while (j<n && x[j] < q) j++;
+    const x0=x[j-1], x1=x[j], y0=y[j-1], y1=y[j];
+    const t = (q - x0) / (x1 - x0);
+    res.push(y0 + t*(y1 - y0));
+  }
+  return res;
+}
 
 /* ---------- Busy UI ---------- */
 function setBusy(b){
@@ -197,7 +311,7 @@ function setBusy(b){
   document.getElementById('progressWrap').style.display = b ? 'inline-flex' : 'none';
 }
 
-/* ---------- Initial render ---------- */
+/* ---------- Init ---------- */
 applyKnobs();
 
 /* ---------- Processing ---------- */
@@ -230,12 +344,52 @@ async function process(){
       const text = await r.text().catch(()=>"(no details)");
       throw new Error(text);
     }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    document.getElementById("resultImg").src = url;
+    const data = await r.json();
 
-    const dl = document.getElementById("downloadLink");
-    dl.href = url; dl.download = "result.png"; dl.style.display = "inline";
+    // update kernels/ticks for chart
+    kernels = data.kernels || [];
+    nBands = data.n_bands || (kernels?.length || 0);
+    renderChart();
+    updateChartData();
+
+    // show images
+    const origUrl = "data:image/png;base64," + data.original_b64;
+    const eqUrl   = "data:image/png;base64," + data.equalized_b64;
+    const modUrl  = "data:image/png;base64," + data.modulated_b64;
+
+    document.getElementById("imgOriginal").src = origUrl;
+    document.getElementById("imgEqualized").src = eqUrl;
+    document.getElementById("imgModulated").src = modUrl;
+
+    // downloads
+    const dlEq = document.getElementById("downloadLinkEq");
+    dlEq.href = eqUrl; dlEq.download = "equalized.png"; dlEq.style.display = "inline";
+    const dlMod = document.getElementById("downloadLinkMod");
+    dlMod.href = modUrl; dlMod.download = "modulated.png"; dlMod.style.display = "inline";
+
+    // overlays (auto on after process)
+    const params = data.params || {};
+    const overlayText =
+      `max_kernel: ${params.max_kernel}\n` +
+      `sigma: ${Number(params.sigma_perc).toFixed(2)}\n` +
+      `alpha: ${Number(params.alpha).toFixed(2)}\n` +
+      `gamma: ${Number(params.gamma).toFixed(2)}\n` +
+      `band_sign: ${params.band_sign}\n` +
+      `preserve_mean: ${params.preserve_mean}\n` +
+      `N: ${params.n_controls}\n` +
+      `gains: ${params.gains_csv}`;
+
+    setOverlay("Orig",  overlayText, document.getElementById("overlayOrig").checked);
+    setOverlay("Eq",    overlayText, document.getElementById("overlayEq").checked);
+    setOverlay("Mod",   overlayText, document.getElementById("overlayMod").checked);
+
+    // hook toggles
+    ["Orig","Eq","Mod"].forEach(kind=>{
+      document.getElementById("overlay"+kind).onchange = (e)=>{
+        setOverlay(kind, overlayText, e.target.checked);
+      };
+    });
+
   }catch(err){
     setMsg("Error: " + (err?.message || String(err)));
   }finally{
@@ -243,6 +397,18 @@ async function process(){
     setBusy(false);
   }
 }
+
+function setOverlay(kind, text, show){
+  const box = document.getElementById("overlayBox"+kind);
+  box.textContent = text;
+  box.style.display = show ? "block" : "none";
+}
 </script>
+
+<!-- Progress row (placed at end so functions exist) -->
+<div class="row" style="margin-top:8px;">
+  <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
+</div>
+
 </body>
 </html>
