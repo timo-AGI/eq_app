@@ -13,8 +13,8 @@ function syncVal(id){
   const toggle = document.getElementById('bgmToggle');
   const note = document.getElementById('musicNote');
 
-  const saved = localStorage.getItem('bgmEnabled') === 'true';
-  toggle.checked = saved;
+  const saved = localStorage.getItem('bgmEnabled') === 'false';
+  toggle.checked = false;
 
   async function tryPlay(){
     try { await audio.play(); note.classList.add('hide'); }
