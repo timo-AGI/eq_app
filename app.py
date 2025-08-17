@@ -114,7 +114,8 @@ def expand_gains(n_controls, gains_csv, n_bands):
     arr=np.array([float(x) for x in vals], dtype=np.float32)
     if len(arr)!=n_controls:
         raise ValueError(f"Expected {n_controls} gains, got {len(arr)}")
-    arr=np.clip(arr, 0.0, 4.0)
+    # UPDATED: allow 0..10
+    arr=np.clip(arr, 0.0, 10.0)
     if n_controls==n_bands:
         return arr.tolist()
     x_ctrl = np.linspace(0, n_bands-1, n_controls, dtype=np.float32)
