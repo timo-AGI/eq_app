@@ -41,9 +41,12 @@
     font-size:12px; border-radius:6px; max-width:45%; line-height:1.25;
     display:none;
   }
+  /* Hide the 3rd column when modulation disabled */
+  .hideMod .imgGrid { grid-template-columns: repeat(2, 1fr); }
+  .hide { display:none !important; }
 </style>
 </head>
-<body>
+<body class="hideMod">
 <h2>Adaptive Equalizer</h2>
 
 <div class="row">
@@ -51,6 +54,7 @@
     <label>Upload image</label>
     <input type="file" id="fileInput" accept="image/*" onchange="preview()"/>
   </div>
+
   <div>
     <label>band_sign</label>
     <select id="band_sign">
@@ -58,13 +62,17 @@
       <option value="literal">literal</option>
     </select>
   </div>
+
   <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
+
+  <!-- NEW: Enable modulation -->
+  <label><input type="checkbox" id="enable_mod" onchange="toggleModulation()"/> enable modulation</label>
 </div>
 
 <div class="row">
   <div>
     <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
-    <input type="range" id="alpha" min="0" max="10" step="0.1" value="1" oninput="sync('alpha')"/>
+    <input type="range" id="alpha" min="0" max="3" step="0.05" value="1" oninput="sync('alpha')"/>
   </div>
   <div>
     <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
@@ -72,19 +80,8 @@
   </div>
 </div>
 
-<div class="row">
-  <div>
-    <label>sigma_perc: <span id="sigma_val" class="val">0.33</span></label>
-    <input type="range" id="sigma_perc" min="0.05" max="0.8" step="0.01" value="0.33" oninput="sync('sigma_perc')"/>
-  </div>
-  <div>
-    <label>max_kernel (odd ≥3): <span id="mk_val" class="val">63</span></label>
-    <input type="range" id="max_kernel" min="3" max="127" step="2" value="63" oninput="sync('max_kernel')"/>
-  </div>
-</div>
-
-<!-- Modulation controls -->
-<div id="modWrap">
+<!-- Modulation controls (hidden until enabled) -->
+<div id="modWrap" class="hide">
   <div class="row" style="justify-content:space-between; align-items:center;">
     <strong>Band Modulation</strong>
     <div>
@@ -103,7 +100,7 @@
 <div class="row">
   <button id="processBtn" onclick="process()">Process</button>
   <a id="downloadLinkEq" style="display:none;margin-left:8px;">Download Equalized</a>
-  <a id="downloadLinkMod" style="display:none;margin-left:8px;">Download Modulated</a>
+  <a id="downloadLinkMod" class="hide" style="margin-left:8px;">Download Modulated</a>
   <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
 </div>
 
@@ -116,7 +113,6 @@
       <strong>Original</strong>
       <!-- No overlay checkbox; original never shows overlay -->
     </div>
-    <!-- No overlayBox for original -->
     <img id="imgOriginal" alt="Original"/>
   </div>
 
@@ -129,7 +125,7 @@
     <img id="imgEqualized" alt="Equalized"/>
   </div>
 
-  <div class="imgCard">
+  <div class="imgCard" id="modCard" class="hide">
     <div class="imgTitle">
       <strong>Modulated</strong>
       <label><input type="checkbox" id="overlayMod" checked/> overlay parameters</label>
@@ -144,8 +140,8 @@ function apiUrl(p){ return new URL(p, window.location.href).toString(); }
 function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
 function sync(id){
   const v = document.getElementById(id).value;
-  const span = document.getElementById(id==='sigma_perc' ? 'sigma_val' : id==='max_kernel' ? 'mk_val' : id + '_val');
-  if (span) span.textContent = (id==='max_kernel') ? v : (+v).toFixed(2);
+  const span = document.getElementById(id + '_val');
+  if (span) span.textContent = (+v).toFixed(2);
 }
 function preview(){
   setMsg('');
@@ -153,6 +149,20 @@ function preview(){
   if(!f) return;
   const url=URL.createObjectURL(f);
   document.getElementById("imgOriginal").src = url; // quick preview for original
+}
+
+/* ---------- Enable/Disable modulation panel ---------- */
+function toggleModulation(){
+  const enabled = document.getElementById('enable_mod').checked;
+  document.getElementById('modWrap').classList.toggle('hide', !enabled);
+  document.body.classList.toggle('hideMod', !enabled);
+  document.getElementById('downloadLinkMod').classList.toggle('hide', !enabled);
+  document.getElementById('modCard').classList.toggle('hide', !enabled);
+
+  if (enabled){
+    if (!gains.length) applyKnobs(); // init default knobs if first time
+    else { renderChart(); updateChartData(); }
+  }
 }
 
 /* ---------- Modulation knobs + curve (Chart.js) ---------- */
@@ -236,6 +246,8 @@ function controlDatasetPoints(){
 }
 
 function renderChart(){
+  const enabled = document.getElementById('enable_mod').checked;
+  if (!enabled) return;
   const ctx = document.getElementById('curveCanvas').getContext('2d');
   if (chart){ chart.destroy(); }
   const nb = nBands || gains.length;                // provisional count
@@ -317,7 +329,7 @@ function setBusy(b){
 }
 
 /* ---------- Init ---------- */
-applyKnobs();
+document.body.classList.add('hideMod');  // start with modulation disabled
 
 /* ---------- Processing ---------- */
 async function process(){
@@ -331,18 +343,20 @@ async function process(){
     if (!file){ setMsg("Choose an image first."); return; }
     setBusy(true);
 
-    const gains_csv = gains.map(v=> v.toFixed(3)).join(',');
+    const do_mod = document.getElementById('enable_mod').checked;
+    const gains_csv = gains.length ? gains.map(v=> v.toFixed(3)).join(',') : '';
 
     const fd = new FormData();
     fd.append("file", file);
     fd.append("alpha", alpha.value);
     fd.append("gamma", gamma.value);
-    fd.append("sigma_perc", sigma_perc.value);
-    fd.append("max_kernel", max_kernel.value);
     fd.append("band_sign", band_sign.value);
     fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
-    fd.append("n_controls", String(gains.length));
-    fd.append("gains_csv", gains_csv);
+    fd.append("do_modulation", do_mod ? "true" : "false");
+    if (do_mod){
+      fd.append("n_controls", String(gains.length));
+      fd.append("gains_csv", gains_csv);
+    }
 
     const r = await fetch(apiUrl('api/process'), { method: "POST", body: fd, signal: controller.signal });
     if (!r.ok){
@@ -351,31 +365,26 @@ async function process(){
     }
     const data = await r.json();
 
-    // update kernels/ticks and band count for chart
+    // update kernels/ticks and band count for chart (only if modulation is enabled)
     kernels = data.kernels || [];
     nBands = data.n_bands || (kernels?.length || 0);
-    renderChart();
-    updateChartData();
+    if (do_mod){
+      renderChart();
+      updateChartData();
+    }
 
     // show images
     const origUrl = "data:image/png;base64," + data.original_b64;
     const eqUrl   = "data:image/png;base64," + data.equalized_b64;
-    const modUrl  = "data:image/png;base64," + data.modulated_b64;
-
     document.getElementById("imgOriginal").src = origUrl;
     document.getElementById("imgEqualized").src = eqUrl;
-    document.getElementById("imgModulated").src = modUrl;
 
     // downloads
     const dlEq = document.getElementById("downloadLinkEq");
     dlEq.href = eqUrl; dlEq.download = "equalized.png"; dlEq.style.display = "inline";
-    const dlMod = document.getElementById("downloadLinkMod");
-    dlMod.href = modUrl; dlMod.download = "modulated.png"; dlMod.style.display = "inline";
 
-    // overlays (ONLY on Equalized and Modulated)
+    // overlays for Equalized
     const p = data.params || {};
-
-    // Equalization-only text
     const eqText =
       `max_kernel: ${p.max_kernel}\n` +
       `sigma: ${Number(p.sigma_perc).toFixed(2)}\n` +
@@ -383,19 +392,27 @@ async function process(){
       `gamma: ${Number(p.gamma).toFixed(2)}\n` +
       `band_sign: ${p.band_sign}\n` +
       `preserve_mean: ${p.preserve_mean}`;
-
-    // Equalization + Modulation text
-    const modText =
-      eqText + `\n` +
-      `N: ${p.n_controls}\n` +
-      `gains: ${p.gains_csv}`;
-
     setOverlayEq(eqText, document.getElementById("overlayEq").checked);
-    setOverlayMod(modText, document.getElementById("overlayMod").checked);
-
-    // hook toggles
     document.getElementById("overlayEq").onchange = (e)=> setOverlayEq(eqText, e.target.checked);
-    document.getElementById("overlayMod").onchange = (e)=> setOverlayMod(modText, e.target.checked);
+
+    // Modulated branch (only when enabled and present)
+    const modLink = document.getElementById("downloadLinkMod");
+    const modCard = document.getElementById("modCard");
+    if (do_mod && data.modulated_b64){
+      const modUrl  = "data:image/png;base64," + data.modulated_b64;
+      document.getElementById("imgModulated").src = modUrl;
+      modLink.href = modUrl; modLink.download = "modulated.png";
+      modLink.classList.remove('hide');
+      modCard.classList.remove('hide');
+
+      const modText = eqText + `\nN: ${p.n_controls}\n` + `gains: ${p.gains_csv}`;
+      setOverlayMod(modText, document.getElementById("overlayMod").checked);
+      document.getElementById("overlayMod").onchange = (e)=> setOverlayMod(modText, e.target.checked);
+    } else {
+      // hide modulated UI if disabled or missing
+      modLink.classList.add('hide');
+      modCard.classList.add('hide');
+    }
 
   }catch(err){
     setMsg("Error: " + (err?.message || String(err)));
