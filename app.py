@@ -158,12 +158,9 @@ async def api_process(
         n_bands = len(kernels)
         gains_full = expand_gains(n_controls, gains_csv, n_bands)
 
-        # Process both versions
-        t0=time.time()
+        # Produce both versions
         equalized = apply_equalizer(img, max_kernel, sigma_perc, alpha, gamma, band_sign, preserve_mean, per_band_gain=1.0)
         modulated = apply_equalizer(img, max_kernel, sigma_perc, alpha, gamma, band_sign, preserve_mean, per_band_gain=gains_full)
-        dt=time.time()-t0
-        print(f"[equalizer] size={img.shape} bands={n_bands} max_k={max_kernel} took={dt:.2f}s")
 
         # Encode as base64 (to return JSON with three images)
         orig_b64 = _encode_png_b64(img)
