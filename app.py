@@ -1,248 +1,468 @@
-from fastapi import FastAPI, File, UploadFile, Form, Response
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-import cv2, numpy as np, base64
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Adaptive Equalizer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<style>
+  body { font-family: Arial, system-ui; max-width: 1100px; margin: 24px auto; padding: 0 12px; }
+  .row { display:flex; gap:20px; margin:12px 0; flex-wrap:wrap; align-items:center; }
+  label { font-size:12px; display:block; opacity:.9; }
+  input[type=range]{ width:240px; }
+  img { max-width:100%; border-radius:6px; display:block; }
+  button{padding:8px 14px; cursor:pointer;}
+  button[disabled]{ opacity:.6; cursor:not-allowed;}
+  #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
+  .val { min-width: 42px; display:inline-block; text-align:right; }
+  #progressWrap { display:none; align-items:center; gap:10px; }
+  .spinner { width:16px; height:16px; border:2px solid #ccc; border-top-color:#333; border-radius:50%; animation:spin .8s linear infinite;}
+  @keyframes spin { to{ transform:rotate(360deg)} }
 
-app = FastAPI()
+  /* Modulation section */
+  #modWrap{ border:1px solid #e5e5e5; border-radius:10px; padding:12px; }
+  #curveArea{ display:flex; flex-direction:column; align-items:center; }
+  #curveCanvas{ width: 900px; height: 240px; }
+  #slidersRow{ display:flex; justify-content:space-between; width:900px; margin-top:14px; }
+  .knobCol{ display:flex; flex-direction:column; align-items:center; user-select:none; }
+  .knobCol input[type=range]{ writing-mode: bt-lr; -webkit-appearance: slider-vertical; height: 150px; width: 28px; }
+  .knobLabel{ font-size:11px; margin-top:6px; }
 
-# Serve static and homepage
-app.mount("/static", StaticFiles(directory="static"), name="static")
+  /* Cards + overlays */
+  .grid2{ display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; }
+  .imgCard{ position:relative; border:1px solid #e5e5e5; border-radius:10px; padding:10px; }
+  .imgTitle{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .overlayBox{
+    position:absolute; top:10px; right:10px;
+    background:rgba(0,0,0,0.6); color:#fff; padding:6px 8px;
+    font-size:12px; border-radius:6px; max-width:55%; line-height:1.25;
+    display:none;
+  }
+  .hide { display:none !important; }
+  .sectionTitle { font-weight: 700; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h2>Adaptive Equalizer</h2>
 
-@app.get("/")
-def index():
-    return FileResponse("static/index.html")
+<!-- 1) Load image -->
+<div class="row">
+  <div>
+    <label>Upload image</label>
+    <input type="file" id="fileInput" accept="image/*" onchange="onImageChosen()"/>
+  </div>
+</div>
 
-@app.get("/api/health")
-def health():
-    return {"ok": True}
+<!-- 2) Controls - Modulation FIRST -->
+<div class="sectionTitle">Modulation</div>
+<div class="row">
+  <label><input type="checkbox" id="enable_mod" onchange="toggleModulation();updateProcessEnabled();"/> enable modulation</label>
+</div>
 
-@app.head("/")
-def head_root():
-    return Response(status_code=200)
+<div id="modWrap" class="hide">
+  <div class="row" style="justify-content:space-between; align-items:center;">
+    <strong>Band Modulation</strong>
+    <div>
+      <label>N knobs (3..10)</label>
+      <input type="number" id="n_controls" min="3" max="10" step="1" value="5" style="width:64px;"/>
+      <button onclick="applyKnobs()">Apply</button>
+    </div>
+  </div>
 
-@app.head("/api/health")
-def head_health():
-    return Response(status_code=200)
+  <div id="curveArea">
+    <canvas id="curveCanvas" width="900" height="240"></canvas>
+    <div id="slidersRow"><!-- sliders inserted dynamically --></div>
+  </div>
+</div>
 
-# ----------------- Fixed parameters -----------------
-FIXED_SIGMA_PERC = 0.05
-FIXED_MAX_KERNEL = 25
+<!-- Equalization SECOND (hidden unless checkbox is on) -->
+<div class="sectionTitle">Equalization</div>
+<div class="row">
+  <label><input type="checkbox" id="enable_eq" onchange="toggleEqualization();updateProcessEnabled();"/> enable equalization</label>
+</div>
 
-# ----------------- Core helpers -----------------
-def _to_float(img: np.ndarray):
-    info = {"dtype": img.dtype, "scale": 1.0}
-    if img.dtype == np.uint8:
-        return img.astype(np.float32)/255.0, {"dtype": img.dtype, "scale":255}
-    if img.dtype == np.uint16:
-        return img.astype(np.float32)/65535.0, {"dtype": img.dtype, "scale":65535}
-    return img.astype(np.float32), info
+<div id="eqWrap" class="hide">
+  <div class="row">
+    <div>
+      <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
+      <input type="range" id="alpha" min="0" max="10" step="0.05" value="1" oninput="sync('alpha')"/>
+    </div>
+    <div>
+      <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
+      <input type="range" id="gamma" min="0.5" max="3" step="0.05" value="1.2" oninput="sync('gamma')"/>
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label>band_sign</label>
+      <select id="band_sign">
+        <option value="dog" selected>dog</option>
+        <option value="literal">literal</option>
+      </select>
+    </div>
+    <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
+  </div>
+</div>
 
-def _from_float(img: np.ndarray, info: dict):
-    scale = info.get("scale",1.0); dtype = info["dtype"]
-    if dtype == np.uint8:
-        return np.clip(img*scale,0,255).astype(np.uint8)
-    if dtype == np.uint16:
-        return np.clip(img*scale,0,65535).astype(np.uint16)
-    return img.astype(np.float32)
+<!-- 3) Process -->
+<div class="row">
+  <button id="processBtn" onclick="process()" class="hide" disabled>Process</button>
+  <a id="downloadLinkOut" style="display:none;margin-left:8px;">Download Output</a>
+  <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
+</div>
 
-def gaussian_blur(img,k,sigma_perc=0.33):
-    sigma = max(0.01, sigma_perc*((k-1)/2))
-    return cv2.GaussianBlur(img,(k,k),sigmaX=sigma,sigmaY=sigma,borderType=cv2.BORDER_REPLICATE)
+<div id="msg"></div>
 
-def local_std(img,k):
-    mu  = cv2.boxFilter(img,-1,(k,k),normalize=True, borderType=cv2.BORDER_REFLECT)
-    mu2 = cv2.boxFilter(img*img,-1,(k,k),normalize=True, borderType=cv2.BORDER_REFLECT)
-    return np.sqrt(np.maximum(0,mu2-mu*mu)+1e-12)
+<!-- Results -->
+<div class="grid2">
+  <div class="imgCard hide" id="origCard">
+    <div class="imgTitle"><strong>Original</strong></div>
+    <img id="imgOriginal" alt="Original"/>
+  </div>
 
-def build_kernel_list(max_kernel): 
-    if max_kernel < 3 or max_kernel % 2 == 0:
-        raise ValueError("max_kernel must be odd and >= 3")
-    return list(range(3, max_kernel+1, 2))
+  <div class="imgCard hide" id="outCard">
+    <div class="imgTitle">
+      <strong>Output</strong>
+      <label><input type="checkbox" id="overlayOut" checked/> overlay parameters</label>
+    </div>
+    <div class="overlayBox" id="overlayBoxOut"></div>
+    <img id="imgOutput" alt="Output"/>
+  </div>
+</div>
 
-def compute_bands(img,kernels,sigma_perc,sign):
-    """Return list of band images: [3x3 band, 3-5 band, 5-7 band, ...]."""
-    blurs=[gaussian_blur(img,k,sigma_perc) for k in kernels]
-    bands=[img-blurs[0]]
-    for i in range(1,len(kernels)):
-        bands.append((blurs[i-1]-blurs[i]) if sign!="literal" else (blurs[i]-blurs[i-1]))
-    return bands
+<script>
+function apiUrl(p){ return new URL(p, window.location.href).toString(); }
+function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
 
-def compute_variations(img,kernels):
-    """Local std per scale, then bandwise deltas of std."""
-    stds=[local_std(img,k) for k in kernels]
-    vars_=[stds[0]]
-    for i in range(1,len(stds)):
-        vars_.append(np.maximum(0,stds[i]-stds[i-1]))
-    return vars_
+function sync(id){
+  const v = document.getElementById(id).value;
+  const span = document.getElementById(id + '_val');
+  if (span) span.textContent = (+v).toFixed(2);
+}
 
-def inverse_weights(vars_,gamma=1.0):
-    """Make inverse-variance weights per band; normalize each band to max=1, then raise to gamma."""
-    ws=[]
-    for v in vars_:
-        inv=1.0/(1e-4+v); m=float(inv.max()) if inv.size else 0.0
-        ws.append(((inv/m)**gamma).astype(np.float32) if m>0 else np.zeros_like(v, dtype=np.float32))
-    return ws
+function onImageChosen(){
+  setMsg('');
+  const f=document.getElementById("fileInput").files[0];
+  const hasImage = !!f;
+  document.getElementById("origCard").classList.toggle('hide', !hasImage);
+  document.getElementById("processBtn").classList.toggle('hide', !hasImage);
 
-def apply_pipeline(
-    img,
-    *,
-    max_kernel,
-    sigma_perc,
-    band_sign,
-    preserve_mean,
-    use_inverse,        # True → equalization; False → no inverse weights
-    gamma,
-    alpha,
-    per_band_gain       # scalar or list of length n_bands
-):
-    f,info=_to_float(img)
-    kernels=build_kernel_list(max_kernel)
-    bands=compute_bands(f,kernels,sigma_perc,band_sign)
+  if(hasImage){
+    const url=URL.createObjectURL(f);
+    document.getElementById("imgOriginal").src = url;
+  }else{
+    document.getElementById("imgOriginal").src = "";
+  }
+  updateProcessEnabled();
+}
 
-    if use_inverse:
-        ws=inverse_weights(compute_variations(f,kernels),gamma)
-    else:
-        ws=[np.ones_like(b, dtype=np.float32 if b.dtype!=np.float32 else b.dtype) for b in bands]
+/* ---------- Enable/Disable process button & visibility ---------- */
+function canProcess(){
+  const hasImage = !!document.getElementById('fileInput').files.length;
+  const anyCheck = document.getElementById('enable_mod').checked || document.getElementById('enable_eq').checked;
+  return hasImage && anyCheck;
+}
+function updateProcessEnabled(){
+  const btn = document.getElementById('processBtn');
+  const hasImage = !!document.getElementById('fileInput').files.length;
+  btn.classList.toggle('hide', !hasImage);  // hide if no image
+  btn.disabled = !canProcess();             // disable unless a checkbox is on
+}
 
-    # gains → list same length as bands, or scalar
-    if isinstance(per_band_gain,(int,float)):
-        gains=[float(per_band_gain)]*len(bands)
-    else:
-        gains=list(per_band_gain)
-        if len(gains)!=len(bands):
-            raise ValueError(f"per_band_gain length mismatch: {len(gains)} vs {len(bands)}")
+/* ---------- Toggle sections ---------- */
+function toggleModulation(){
+  const enabled = document.getElementById('enable_mod').checked;
+  document.getElementById('modWrap').classList.toggle('hide', !enabled);
+  if (enabled){
+    if (!gains.length) applyKnobs();
+    else { renderChart(); updateChartData(); }
+  }
+}
+function toggleEqualization(){
+  const enabled = document.getElementById('enable_eq').checked;
+  document.getElementById('eqWrap').classList.toggle('hide', !enabled);
+}
 
-    total=np.zeros_like(f,dtype=np.float32)
-    for b,w,g in zip(bands,ws,gains):
-        if f.ndim==3 and w.ndim==2: w=w[...,None]
-        total += (g*w*b).astype(np.float32)
+/* ---------- Modulation knobs + curve (Chart.js) ---------- */
+let gains = [];     // N control points [0..10]
+let chart = null;
+let kernels = [];   // kernel sizes from server (for x-axis tick labels)
+let nBands = 0;     // total bands; before processing use gains.length
 
-    total *= alpha  # alpha will be 1.0 for modulation-only
+const unityLine = {
+  id: 'unityLine',
+  afterDraw(chart, args, opts) {
+    const yScale = chart.scales.y;
+    const ctx = chart.ctx;
+    const y = yScale.getPixelForValue(1);
+    ctx.save();
+    ctx.strokeStyle = '#888';
+    ctx.setLineDash([5,4]);
+    ctx.beginPath();
+    ctx.moveTo(chart.chartArea.left, y);
+    ctx.lineTo(chart.chartArea.right, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
 
-    if preserve_mean:
-        if f.ndim==2: total -= total.mean()
-        else:
-            for c in range(f.shape[2]): total[...,c] -= total[...,c].mean()
+function applyKnobs(){
+  const N = Math.max(3, Math.min(10, parseInt(document.getElementById('n_controls').value||5,10)));
+  gains = Array(N).fill(1.0);
+  renderSliders();
+  renderChart();
+  updateChartData();
+}
 
-    out=np.clip(f+total,0,1)
-    return _from_float(out,info), kernels
+function renderSliders(){
+  const row = document.getElementById('slidersRow');
+  row.innerHTML = '';
+  gains.forEach((v,i)=>{
+    const col = document.createElement('div');
+    col.className = 'knobCol';
 
-def expand_gains(n_controls, gains_csv, n_bands):
-    vals=[v for v in gains_csv.replace(' ','').split(',') if v!='']
-    arr=np.array([float(x) for x in vals], dtype=np.float32)
-    if len(arr)!=n_controls:
-        raise ValueError(f"Expected {n_controls} gains, got {len(arr)}")
-    arr=np.clip(arr, 0.0, 10.0)  # gain range 0..10
-    if n_controls==n_bands:
-        return arr.tolist()
-    x_ctrl = np.linspace(0, n_bands-1, n_controls, dtype=np.float32)
-    x_full = np.arange(n_bands, dtype=np.float32)
-    full   = np.interp(x_full, x_ctrl, arr)
-    return full.tolist()
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0'; slider.max = '10'; slider.step = '0.05';
+    slider.value = String(v);
+    slider.oninput = (e)=>{
+      let val = parseFloat(e.target.value);
+      if (Math.abs(val - 1.0) < 0.05) val = 1.0; // snap to 1
+      gains[i] = val;
+      e.target.value = String(val);
+      label.textContent = `b${i+1}: ${gains[i].toFixed(2)}`;
+      updateChartData();
+    };
 
-def _encode_png_b64(img_bgr: np.ndarray) -> str:
-    ok, buf = cv2.imencode(".png", img_bgr)
-    if not ok:
-        raise RuntimeError("PNG encode failed")
-    return base64.b64encode(buf.tobytes()).decode("ascii")
+    const label = document.createElement('div');
+    label.className = 'knobLabel';
+    label.textContent = `b${i+1}: ${v.toFixed(2)}`;
 
-# ----------------- API -----------------
-MAX_BYTES = 12 * 1024 * 1024
-ALLOWED_TYPES = {"image/jpeg","image/png","image/webp"}
+    col.appendChild(slider);
+    col.appendChild(label);
+    row.appendChild(col);
+  });
+}
 
-@app.post("/api/process")
-async def api_process(
-    file: UploadFile=File(...),
-    # toggles
-    do_equalize: bool = Form(False),
-    do_modulation: bool = Form(False),
-    # equalization params (used iff do_equalize)
-    alpha: float = Form(1.0),
-    gamma: float = Form(1.2),
-    band_sign: str = Form("dog"),
-    preserve_mean: bool = Form(True),
-    # modulation params (used iff do_modulation)
-    n_controls: int = Form(5),
-    gains_csv: str = Form("1,1,1,1,1"),
-):
-    try:
-        if (not do_equalize) and (not do_modulation):
-            return JSONResponse({"error": "Enable equalization and/or modulation to process."}, status_code=400)
+function makeInterpolatedCurve(){
+  const nb = nBands || gains.length;
+  if (!nb || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
+  const xs = Array.from({length: nb}, (_,i)=> i);
+  const ys = interp1(xCtrl, gains, xs);
+  return xs.map((x,i)=> ({x, y: ys[i]}));
+}
 
-        if file.content_type not in ALLOWED_TYPES:
-            return JSONResponse({"error": f"Unsupported type {file.content_type}. Use JPG/PNG/WEBP."}, status_code=415)
-        buf=await file.read()
-        if not buf: return JSONResponse({"error":"Empty upload"}, status_code=400)
-        if len(buf)>MAX_BYTES: return JSONResponse({"error":"File too large (>12MB)"}, status_code=413)
+function controlDatasetPoints(){
+  const nb = nBands || gains.length;
+  if (!nb || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
+  return xCtrl.map((x,i)=> ({x, y: gains[i]}));
+}
 
-        img=cv2.imdecode(np.frombuffer(buf,np.uint8),cv2.IMREAD_COLOR)
-        if img is None: return JSONResponse({"error":"Decode failed. Use JPG/PNG/WEBP."}, status_code=400)
-
-        kernels = build_kernel_list(FIXED_MAX_KERNEL)
-        n_bands = len(kernels)
-
-        if do_modulation:
-            gains_full = expand_gains(n_controls, gains_csv, n_bands)
-        else:
-            gains_full = 1.0
-
-        if do_equalize and do_modulation:
-            out_img, kernels = apply_pipeline(
-                img,
-                max_kernel=FIXED_MAX_KERNEL,
-                sigma_perc=FIXED_SIGMA_PERC,
-                band_sign=band_sign,
-                preserve_mean=preserve_mean,
-                use_inverse=True,
-                gamma=gamma,
-                alpha=alpha,
-                per_band_gain=gains_full
-            )
-        elif do_equalize:
-            out_img, kernels = apply_pipeline(
-                img,
-                max_kernel=FIXED_MAX_KERNEL,
-                sigma_perc=FIXED_SIGMA_PERC,
-                band_sign=band_sign,
-                preserve_mean=preserve_mean,
-                use_inverse=True,
-                gamma=gamma,
-                alpha=alpha,
-                per_band_gain=1.0
-            )
-        else:
-            # modulation only: no inverse, alpha=1, gamma ignored
-            out_img, kernels = apply_pipeline(
-                img,
-                max_kernel=FIXED_MAX_KERNEL,
-                sigma_perc=FIXED_SIGMA_PERC,
-                band_sign="dog",          # band_sign irrelevant here, keep DoG default
-                preserve_mean=preserve_mean,
-                use_inverse=False,
-                gamma=1.0,
-                alpha=1.0,
-                per_band_gain=gains_full
-            )
-
-        return {
-            "output_b64": _encode_png_b64(out_img),
-            "kernels": kernels,
-            "n_bands": n_bands,
-            "params": {
-                "max_kernel": FIXED_MAX_KERNEL,
-                "sigma_perc": FIXED_SIGMA_PERC,
-                "do_equalize": bool(do_equalize),
-                "do_modulation": bool(do_modulation),
-                # only provided when EQ is used (for overlay)
-                "alpha": alpha if do_equalize else None,
-                "gamma": gamma if do_equalize else None,
-                "band_sign": band_sign if do_equalize else None,
-                "preserve_mean": bool(preserve_mean),
-                # modulation overlay
-                "n_controls": n_controls if do_modulation else None,
-                "gains_csv": gains_csv if do_modulation else None,
+function renderChart(){
+  const enabled = document.getElementById('enable_mod').checked;
+  if (!enabled) return;
+  const ctx = document.getElementById('curveCanvas').getContext('2d');
+  if (chart){ chart.destroy(); }
+  const nb = nBands || gains.length;
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label:'Interpolated', data: makeInterpolatedCurve(), borderWidth:2, pointRadius:0, fill:false, tension:0.0 },
+        { label:'Controls',     data: controlDatasetPoints(),  borderWidth:2, pointRadius:3, fill:false, tension:0.0 }
+      ]
+    },
+    plugins: [unityLine],
+    options: {
+      animation: false,
+      responsive: false,
+      parsing: false,
+      scales: {
+        x: {
+          type: 'linear',
+          min: 0,
+          max: Math.max(0, nb-1),
+          ticks: {
+            callback: (val) => {
+              const idx = Math.round(val);
+              if (idx < 0) return '';
+              if (kernels && kernels.length && idx < kernels.length) {
+                if (idx % 2 === 1) return '';
+                return `${kernels[idx]}×${kernels[idx]}`;
+              } else {
+                return (idx % 1 === 0) ? `b${idx+1}` : '';
+              }
             }
-        }
-    except Exception as e:
-        print("[api_process] ERROR:", repr(e))
-        return JSONResponse({"error":str(e)}, status_code=400)
+          },
+          title:{display:true, text:'Bands'}
+        },
+        y: { min: 0, max: 10, title:{display:true, text:'Gain (0..10)'} }
+      },
+      plugins: { legend: { display: false } }
+    }
+  });
+}
+
+function updateChartData(){
+  if (!chart) return;
+  chart.options.scales.x.max = Math.max(0, (nBands || gains.length) - 1);
+  chart.data.datasets[0].data = makeInterpolatedCurve();
+  chart.data.datasets[1].data = controlDatasetPoints();
+  chart.update();
+}
+
+function linspace(a,b,n){
+  if (n===1) return [a];
+  const step=(b-a)/(n-1);
+  return Array.from({length:n},(_,i)=> a + i*step);
+}
+function interp1(x, y, xq){
+  const n = x.length, res = [];
+  for (const q of xq){
+    if (q <= x[0]) { res.push(y[0]); continue; }
+    if (q >= x[n-1]) { res.push(y[n-1]); continue; }
+    let j=1; while (j<n && x[j] < q) j++;
+    const x0=x[j-1], x1=x[j], y0=y[j-1], y1=y[j];
+    const t = (q - x0) / (x1 - x0);
+    res.push(y0 + t*(y1 - y0));
+  }
+  return res;
+}
+
+/* ---------- Busy UI ---------- */
+function setBusy(b){
+  const btn = document.getElementById('processBtn');
+  btn.disabled = b || !canProcess();
+  document.getElementById('fileInput').disabled = b;
+  document.getElementById('progressWrap').style.display = b ? 'inline-flex' : 'none';
+}
+
+/* ---------- Processing ---------- */
+async function process(){
+  if (!canProcess()) return;
+  document.getElementById('outCard').classList.add('hide');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 180000);
+  try{
+    setMsg('');
+    const file = document.getElementById("fileInput").files[0];
+    if (!file){ setMsg("Choose an image first."); return; }
+    setBusy(true);
+
+    const do_mod = document.getElementById('enable_mod').checked;
+    const do_eq  = document.getElementById('enable_eq').checked;
+    const gains_csv = (do_mod && gains.length) ? gains.map(v=> v.toFixed(3)).join(',') : '';
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    // Equalization fields (only if enabled)
+    fd.append("do_equalize", do_eq ? "true" : "false");
+    if (do_eq){
+      fd.append("alpha", document.getElementById('alpha').value);
+      fd.append("gamma", document.getElementById('gamma').value);
+      fd.append("band_sign", document.getElementById('band_sign').value);
+      fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
+    } else {
+      // Still pass preserve_mean for pipeline; overlay suppression handled on server
+      fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
+    }
+
+    // Modulation fields (only if enabled)
+    fd.append("do_modulation", do_mod ? "true" : "false");
+    if (do_mod){
+      fd.append("n_controls", String(gains.length));
+      fd.append("gains_csv", gains_csv);
+    }
+
+    const r = await fetch(apiUrl('api/process'), { method: "POST", body: fd, signal: controller.signal });
+    if (!r.ok){
+      const text = await r.text().catch(()=>"(no details)");
+      throw new Error(text);
+    }
+    const data = await r.json();
+
+    // update kernels/ticks for chart if modulation is enabled
+    kernels = data.kernels || [];
+    nBands = data.n_bands || (kernels?.length || 0);
+    if (do_mod){
+      renderChart();
+      updateChartData();
+    }
+
+    // show result
+    const outUrl = "data:image/png;base64," + data.output_b64;
+    document.getElementById("imgOutput").src = outUrl;
+    document.getElementById("outCard").classList.remove('hide');
+
+    // download link
+    const dlOut = document.getElementById("downloadLinkOut");
+    dlOut.href = outUrl; dlOut.download = "output.png"; dlOut.style.display = "inline";
+
+    // ------- Overlay (NO preserve_mean when modulation-only) -------
+    const p = data.params || {};
+    let overlay = "";
+    if (p.do_equalize){
+      overlay +=
+        `EQ:\n` +
+        `  max_kernel: ${p.max_kernel}\n` +
+        `  sigma: ${Number(p.sigma_perc).toFixed(2)}\n` +
+        `  alpha: ${Number(p.alpha).toFixed(2)}\n` +
+        `  gamma: ${Number(p.gamma).toFixed(2)}\n` +
+        `  band_sign: ${p.band_sign}\n` +
+        `  preserve_mean: ${p.preserve_mean}\n`;
+    }
+    if (p.do_modulation){
+      overlay +=
+        `MOD:\n` +
+        `  N: ${p.n_controls}\n` +
+        `  gains: ${p.gains_csv}\n`;
+    }
+
+    setOverlayOut(overlay.trim(), document.getElementById("overlayOut").checked);
+    document.getElementById("overlayOut").onchange = (e)=> setOverlayOut(overlay.trim(), e.target.checked);
+
+  }catch(err){
+    setMsg("Error: " + (err?.message || String(err)));
+  }finally{
+    clearTimeout(timeout);
+    setBusy(false);
+    updateProcessEnabled();
+  }
+}
+
+function setOverlayOut(text, show){
+  const box = document.getElementById("overlayBoxOut");
+  box.textContent = text;
+  box.style.display = show ? "block" : "none";
+}
+
+/* ---------- Small utils ---------- */
+function linspace(a,b,n){
+  if (n===1) return [a];
+  const step=(b-a)/(n-1);
+  return Array.from({length:n},(_,i)=> a + i*step);
+}
+function interp1(x, y, xq){
+  const n = x.length, res = [];
+  for (const q of xq){
+    if (q <= x[0]) { res.push(y[0]); continue; }
+    if (q >= x[n-1]) { res.push(y[n-1]); continue; }
+    let j=1; while (j<n && x[j] < q) j++;
+    const x0=x[j-1], x1=x[j], y0=y[j-1], y1=y[j];
+    const t = (q - x0) / (x1 - x0);
+    res.push(y0 + t*(y1 - y0));
+  }
+  return res;
+}
+</script>
+
+<!-- Progress row -->
+<div class="row" style="margin-top:8px;">
+  <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
+</div>
+
+</body>
+</html>
