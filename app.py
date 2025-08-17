@@ -7,7 +7,7 @@ app = FastAPI()
 
 from starlette.middleware.cors import CORSMiddleware
 
-# (optional CORS; fine to keep wide-open for now)
+# (optional but fine to keep)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,22 +16,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Allow embedding from your Wix site(s)
 @app.middleware("http")
 async def add_frame_headers(request, call_next):
     resp = await call_next(request)
 
-    # Remove any existing X-Frame-Options that could block embedding
-    # (Render/proxies sometimes inject DENY/SAMEORIGIN)
-    try:
-        resp.headers.pop("x-frame-options")
-        resp.headers.pop("X-Frame-Options")
-    except KeyError:
-        pass
+    # 1) Remove X-Frame-Options if any (blocks embedding)
+    for k in ("x-frame-options", "X-Frame-Options"):
+        try:
+            del resp.headers[k]
+        except KeyError:
+            pass
 
-    # Allow your Wix site to be an ancestor (i.e., to frame this app)
-    # Include both wixsite.com preview and your own domain.
-    resp.headers["Content-Security-Policy"] = (
+    # 2) Ensure CSP allows your Wix site(s) to frame this app
+    allowed = (
         "frame-ancestors 'self' "
         "https://*.wixsite.com "
         "https://*.wixstudio.io "
@@ -39,8 +36,15 @@ async def add_frame_headers(request, call_next):
         "https://www.fourierimagelab.com"
     )
 
-    # Old header (deprecated) — we simply omit it; some browsers ignore ALLOW-FROM.
-    # resp.headers["X-Frame-Options"] = "ALLOW-FROM https://fourierimagelab.com"
+    # If a CSP already exists, replace/append the frame-ancestors directive
+    existing_csp = resp.headers.get("Content-Security-Policy", "")
+    if existing_csp:
+        directives = [d.strip() for d in existing_csp.split(";") if d.strip()]
+        directives = [d for d in directives if not d.lower().startswith("frame-ancestors")]
+        directives.append(allowed)
+        resp.headers["Content-Security-Policy"] = "; ".join(directives)
+    else:
+        resp.headers["Content-Security-Policy"] = allowed
 
     return resp
 
