@@ -69,59 +69,62 @@
   </div>
 
 <script>
-function apiUrl(p){ // build relative URL (works under subpaths)
-  return new URL(p, window.location.href).toString();
-}
+function apiUrl(p){ return new URL(p, window.location.href).toString(); }
 function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
 function sync(id){
-  let v = document.getElementById(id).value;
-  document.getElementById(
+  const v = document.getElementById(id).value;
+  const span = document.getElementById(
     id==='sigma_perc' ? 'sigma_val' :
     id==='max_kernel' ? 'mk_val' :
     id + '_val'
-  ).innerText = (id==='max_kernel') ? v : (+v).toFixed(2);
+  );
+  if (span) span.textContent = (id==='max_kernel') ? v : (+v).toFixed(2);
 }
-function preview(){
-  let f=document.getElementById("fileInput").files[0];
-  if(!f) return;
-  let url=URL.createObjectURL(f);
-  let img=document.getElementById("previewImg");
-  img.src=url; img.style.display="block";
+async function preview(){
   setMsg('');
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const prev = document.getElementById("previewImg");
+  prev.src = url; prev.style.display = "block";
 }
+
 async function process(){
   try{
     setMsg('');
-    let f=document.getElementById("fileInput").files[0];
-    if(!f){ setMsg("Choose an image first."); return; }
+    const file = document.getElementById("fileInput").files[0];
+    if (!file){ setMsg("Choose an image first."); return; }
 
-    // Optional: quick backend health check
+    // Quick backend check (optional)
     try {
       const h = await fetch(apiUrl('api/health'));
-      if(!h.ok){ setMsg("Backend not ready yet. Try again in a moment."); return; }
-    } catch (e) {
-      setMsg("Cannot reach backend. Try again shortly."); return;
+      if(!h.ok){ setMsg("Backend not ready. Try again in a moment."); return; }
+    } catch(e) { setMsg("Cannot reach backend."); return; }
+
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("alpha", alpha.value);
+    fd.append("gamma", gamma.value);
+    fd.append("sigma_perc", sigma_perc.value);
+    fd.append("max_kernel", max_kernel.value);
+    fd.append("band_sign", band_sign.value);
+    fd.append("preserve_mean", preserve_mean.checked ? "true" : "false");
+
+    const r = await fetch(apiUrl('api/process'), { method: "POST", body: fd });
+    if (!r.ok){
+      const text = await r.text();
+      setMsg("Error: " + text);
+      return;
     }
 
-    let fd=new FormData();
-    fd.append("file",f);
-    fd.append("alpha",alpha.value);
-    fd.append("gamma",gamma.value);
-    fd.append("sigma_perc",sigma_perc.value);
-    fd.append("max_kernel",max_kernel.value);
-    fd.append("band_sign",band_sign.value);
-    fd.append("preserve_mean",preserve_mean.checked?"true":"false");
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    document.getElementById("resultImg").src = url;
 
-    let r=await fetch(apiUrl('api/process'),{method:"POST",body:fd});
-    if(!r.ok){ setMsg("Error: "+await r.text()); return; }
-
-    let blob=await r.blob(); let url=URL.createObjectURL(blob);
-    resultImg.src=url;
-
-    let dl=document.getElementById("downloadLink");
-    dl.href=url; dl.download="result.png"; dl.style.display="inline";
+    const dl = document.getElementById("downloadLink");
+    dl.href = url; dl.download = "result.png"; dl.style.display = "inline";
   }catch(err){
-    setMsg("Unexpected error: "+(err?.message||err));
+    setMsg("Unexpected error: " + (err?.message || err));
   }
 }
 </script>
