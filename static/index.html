@@ -1,49 +1,389 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>Adaptive Frequency Equalizer</title>
-  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-  <script src="script.js" defer></script>
+<meta charset="utf-8"/>
+<title>Adaptive Equalizer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<style>
+  body { font-family: Arial, system-ui; max-width: 1100px; margin: 24px auto; padding: 0 12px; }
+  .row { display:flex; gap:20px; margin:12px 0; flex-wrap:wrap; align-items:center; }
+  label { font-size:12px; display:block; opacity:.85; }
+  input[type=range]{ width:240px; }
+  img { max-width:100%; border-radius:6px; display:block; }
+  button{padding:8px 14px; cursor:pointer;}
+  button[disabled]{ opacity:.6; cursor:not-allowed;}
+  #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
+  .val { min-width: 42px; display:inline-block; text-align:right; }
+  #progressWrap { display:none; align-items:center; gap:10px; }
+  .spinner { width:16px; height:16px; border:2px solid #ccc; border-top-color:#333; border-radius:50%; animation:spin .8s linear infinite;}
+  @keyframes spin { to{ transform:rotate(360deg)} }
+
+  /* Modulation section */
+  #modWrap{ border:1px solid #e5e5e5; border-radius:10px; padding:12px; }
+  #curveArea{ display:flex; flex-direction:column; align-items:center; }
+  #curveCanvas{ width: 900px; height: 240px; }
+  #slidersRow{ display:flex; justify-content:space-between; width:900px; margin-top:14px; }
+  .knobCol{ display:flex; flex-direction:column; align-items:center; user-select:none; }
+  .knobCol input[type=range]{ writing-mode: bt-lr; -webkit-appearance: slider-vertical; height: 150px; width: 28px; }
+  .knobLabel{ font-size:11px; margin-top:6px; }
+
+  /* Cards + overlays */
+  .grid2{ display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; }
+  .imgCard{ position:relative; border:1px solid #e5e5e5; border-radius:10px; padding:10px; }
+  .imgTitle{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .overlayBox{
+    position:absolute; top:10px; right:10px;
+    background:rgba(0,0,0,0.6); color:#fff; padding:6px 8px;
+    font-size:12px; border-radius:6px; max-width:55%; line-height:1.25;
+    display:none;
+  }
+  .hide { display:none !important; }
+</style>
 </head>
 <body>
-  <h2>Adaptive Frequency Equalizer</h2>
+<h2>Adaptive Equalizer</h2>
 
-  <!-- Upload -->
-  <input type="file" id="upload" accept="image/*">
-  <br><br>
-
-  <!-- Equalization controls -->
-  <label>Alpha (0–10):</label>
-  <input type="range" id="alpha" min="0" max="10" step="0.1" value="1">
-  <span id="alphaVal">1</span>
-  <br><br>
-
-  <!-- Toggle modulation -->
-  <label>
-    <input type="checkbox" id="modulationToggle">
-    Enable Modulation
-  </label>
-  <br><br>
-
-  <!-- Modulation panel (hidden until checked) -->
-  <div id="modulationPanel" style="display:none;">
-    <label>Number of bands (3–10):</label>
-    <input type="number" id="bands" min="3" max="10" value="5">
-    <button onclick="updateBands()">Apply</button>
-    <br><br>
-    <div id="curvePlot" style="width:600px;height:400px;"></div>
-    <div id="sliders"></div>
+<div class="row">
+  <div>
+    <label>Upload image</label>
+    <input type="file" id="fileInput" accept="image/*" onchange="preview()"/>
   </div>
 
-  <!-- Process -->
-  <button onclick="processImage()">Process</button>
-  <br><br>
+  <div>
+    <label>band_sign</label>
+    <select id="band_sign">
+      <option value="dog" selected>dog</option>
+      <option value="literal">literal</option>
+    </select>
+  </div>
 
-  <!-- Output -->
-  <h3>Output</h3>
-  <img id="outputImage" style="max-width:600px; border:1px solid black;">
-  <br>
-  <a id="downloadLink" style="display:none;" download="processed.png">Download Processed Image</a>
+  <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
+
+  <!-- Enable modulation -->
+  <label><input type="checkbox" id="enable_mod" onchange="toggleModulation()"/> enable modulation</label>
+</div>
+
+<div class="row">
+  <div>
+    <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
+    <!-- UPDATED: max=10 -->
+    <input type="range" id="alpha" min="0" max="10" step="0.05" value="1" oninput="sync('alpha')"/>
+  </div>
+  <div>
+    <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
+    <input type="range" id="gamma" min="0.5" max="3" step="0.05" value="1.2" oninput="sync('gamma')"/>
+  </div>
+</div>
+
+<!-- Modulation controls (hidden until enabled) -->
+<div id="modWrap" class="hide">
+  <div class="row" style="justify-content:space-between; align-items:center;">
+    <strong>Band Modulation</strong>
+    <div>
+      <label>N knobs (3..10)</label>
+      <input type="number" id="n_controls" min="3" max="10" step="1" value="5" style="width:64px;"/>
+      <button onclick="applyKnobs()">Apply</button>
+    </div>
+  </div>
+
+  <div id="curveArea">
+    <canvas id="curveCanvas" width="900" height="240"></canvas>
+    <div id="slidersRow"><!-- sliders inserted dynamically --></div>
+  </div>
+</div>
+
+<div class="row">
+  <button id="processBtn" onclick="process()">Process</button>
+  <a id="downloadLinkOut" style="display:none;margin-left:8px;">Download Output</a>
+  <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
+</div>
+
+<div id="msg"></div>
+
+<!-- Results -->
+<div class="grid2">
+  <div class="imgCard">
+    <div class="imgTitle"><strong>Original</strong></div>
+    <img id="imgOriginal" alt="Original"/>
+  </div>
+
+  <div class="imgCard">
+    <div class="imgTitle">
+      <strong>Output</strong>
+      <label><input type="checkbox" id="overlayOut" checked/> overlay parameters</label>
+    </div>
+    <div class="overlayBox" id="overlayBoxOut"></div>
+    <img id="imgOutput" alt="Output"/>
+  </div>
+</div>
+
+<script>
+function apiUrl(p){ return new URL(p, window.location.href).toString(); }
+function setMsg(t){ document.getElementById('msg').textContent = t || ''; }
+function sync(id){
+  const v = document.getElementById(id).value;
+  const span = document.getElementById(id + '_val');
+  if (span) span.textContent = (+v).toFixed(2);
+}
+function preview(){
+  setMsg('');
+  const f=document.getElementById("fileInput").files[0];
+  if(!f) return;
+  const url=URL.createObjectURL(f);
+  document.getElementById("imgOriginal").src = url;
+}
+
+function toggleModulation(){
+  const enabled = document.getElementById('enable_mod').checked;
+  document.getElementById('modWrap').classList.toggle('hide', !enabled);
+  if (enabled){
+    if (!gains.length) applyKnobs();
+    else { renderChart(); updateChartData(); }
+  }
+}
+
+/* ---------- Modulation knobs + curve (Chart.js) ---------- */
+let gains = [];     // N control points [0..10]
+let chart = null;
+let kernels = [];   // kernel sizes from server
+let nBands = 0;     // total bands; before processing use gains.length
+
+const unityLine = {
+  id: 'unityLine',
+  afterDraw(chart, args, opts) {
+    const yScale = chart.scales.y;
+    const ctx = chart.ctx;
+    const y = yScale.getPixelForValue(1);
+    ctx.save();
+    ctx.strokeStyle = '#888';
+    ctx.setLineDash([5,4]);
+    ctx.beginPath();
+    ctx.moveTo(chart.chartArea.left, y);
+    ctx.lineTo(chart.chartArea.right, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+
+function applyKnobs(){
+  const N = Math.max(3, Math.min(10, parseInt(document.getElementById('n_controls').value||5,10)));
+  gains = Array(N).fill(1.0);
+  renderSliders();
+  renderChart();
+  updateChartData();
+}
+
+function renderSliders(){
+  const row = document.getElementById('slidersRow');
+  row.innerHTML = '';
+  gains.forEach((v,i)=>{
+    const col = document.createElement('div');
+    col.className = 'knobCol';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    // UPDATED: modulation gain up to 10
+    slider.min = '0'; slider.max = '10'; slider.step = '0.05';
+    slider.value = String(v);
+    slider.oninput = (e)=>{
+      let val = parseFloat(e.target.value);
+      if (Math.abs(val - 1.0) < 0.05) val = 1.0; // snap to 1
+      gains[i] = val;
+      e.target.value = String(val);
+      label.textContent = `b${i+1}: ${gains[i].toFixed(2)}`;
+      updateChartData();
+    };
+
+    const label = document.createElement('div');
+    label.className = 'knobLabel';
+    label.textContent = `b${i+1}: ${v.toFixed(2)}`;
+
+    col.appendChild(slider);
+    col.appendChild(label);
+    row.appendChild(col);
+  });
+}
+
+function makeInterpolatedCurve(){
+  const nb = nBands || gains.length;
+  if (!nb || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
+  const xs = Array.from({length: nb}, (_,i)=> i);
+  const ys = interp1(xCtrl, gains, xs);
+  return xs.map((x,i)=> ({x, y: ys[i]}));
+}
+
+function controlDatasetPoints(){
+  const nb = nBands || gains.length;
+  if (!nb || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
+  return xCtrl.map((x,i)=> ({x, y: gains[i]}));
+}
+
+function renderChart(){
+  const enabled = document.getElementById('enable_mod').checked;
+  if (!enabled) return;
+  const ctx = document.getElementById('curveCanvas').getContext('2d');
+  if (chart){ chart.destroy(); }
+  const nb = nBands || gains.length;
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label:'Interpolated', data: makeInterpolatedCurve(), borderWidth:2, pointRadius:0, fill:false, tension:0.0 },
+        { label:'Controls',     data: controlDatasetPoints(),  borderWidth:2, pointRadius:3, fill:false, tension:0.0 }
+      ]
+    },
+    plugins: [unityLine],
+    options: {
+      animation: false,
+      responsive: false,
+      parsing: false,
+      scales: {
+        x: {
+          type: 'linear',
+          min: 0,
+          max: Math.max(0, nb-1),
+          ticks: {
+            callback: (val) => {
+              const idx = Math.round(val);
+              if (idx < 0) return '';
+              if (kernels && kernels.length && idx < kernels.length) {
+                if (idx % 2 === 1) return '';
+                return `${kernels[idx]}×${kernels[idx]}`;
+              } else {
+                return (idx % 1 === 0) ? `b${idx+1}` : '';
+              }
+            }
+          },
+          title:{display:true, text:'Bands'}
+        },
+        // UPDATED: y-axis up to 10
+        y: { min: 0, max: 10, title:{display:true, text:'Gain (0..10)'} }
+      },
+      plugins: { legend: { display: false } }
+    }
+  });
+}
+
+function updateChartData(){
+  if (!chart) return;
+  chart.options.scales.x.max = Math.max(0, (nBands || gains.length) - 1);
+  chart.data.datasets[0].data = makeInterpolatedCurve();
+  chart.data.datasets[1].data = controlDatasetPoints();
+  chart.update();
+}
+
+function linspace(a,b,n){
+  if (n===1) return [a];
+  const step=(b-a)/(n-1);
+  return Array.from({length:n},(_,i)=> a + i*step);
+}
+function interp1(x, y, xq){
+  const n = x.length, res = [];
+  for (const q of xq){
+    if (q <= x[0]) { res.push(y[0]); continue; }
+    if (q >= x[n-1]) { res.push(y[n-1]); continue; }
+    let j=1; while (j<n && x[j] < q) j++;
+    const x0=x[j-1], x1=x[j], y0=y[j-1], y1=y[j];
+    const t = (q - x0) / (x1 - x0);
+    res.push(y0 + t*(y1 - y0));
+  }
+  return res;
+}
+
+/* ---------- Busy UI ---------- */
+function setBusy(b){
+  document.getElementById('processBtn').disabled = b;
+  document.getElementById('fileInput').disabled = b;
+  document.getElementById('progressWrap').style.display = b ? 'inline-flex' : 'none';
+}
+
+/* ---------- Processing ---------- */
+async function process(){
+  if (document.getElementById('processBtn').disabled) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 180000);
+  try{
+    setMsg('');
+    const file = document.getElementById("fileInput").files[0];
+    if (!file){ setMsg("Choose an image first."); return; }
+    setBusy(true);
+
+    const do_mod = document.getElementById('enable_mod').checked;
+    const gains_csv = gains.length ? gains.map(v=> v.toFixed(3)).join(',') : '';
+
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("alpha", alpha.value);
+    fd.append("gamma", gamma.value);
+    fd.append("band_sign", band_sign.value);
+    fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
+    fd.append("do_modulation", do_mod ? "true" : "false");
+    if (do_mod){
+      fd.append("n_controls", String(gains.length));
+      fd.append("gains_csv", gains_csv);
+    }
+
+    const r = await fetch(apiUrl('api/process'), { method: "POST", body: fd, signal: controller.signal });
+    if (!r.ok){
+      const text = await r.text().catch(()=>"(no details)");
+      throw new Error(text);
+    }
+    const data = await r.json();
+
+    // update kernels/ticks for chart if modulation is enabled
+    kernels = data.kernels || [];
+    nBands = data.n_bands || (kernels?.length || 0);
+    if (do_mod){
+      renderChart();
+      updateChartData();
+    }
+
+    // set output image
+    const outUrl = "data:image/png;base64," + data.output_b64;
+    document.getElementById("imgOutput").src = outUrl;
+
+    // download link
+    const dlOut = document.getElementById("downloadLinkOut");
+    dlOut.href = outUrl; dlOut.download = "output.png"; dlOut.style.display = "inline";
+
+    // overlay params
+    const p = data.params || {};
+    const eqText =
+      `max_kernel: ${p.max_kernel}\n` +
+      `sigma: ${Number(p.sigma_perc).toFixed(2)}\n` +
+      `alpha: ${Number(p.alpha).toFixed(2)}\n` +
+      `gamma: ${Number(p.gamma).toFixed(2)}\n` +
+      `band_sign: ${p.band_sign}\n` +
+      `preserve_mean: ${p.preserve_mean}`;
+    const outText = p.do_modulation
+      ? eqText + `\nN: ${p.n_controls}\n` + `gains: ${p.gains_csv}`
+      : eqText;
+
+    setOverlayOut(outText, document.getElementById("overlayOut").checked);
+    document.getElementById("overlayOut").onchange = (e)=> setOverlayOut(outText, e.target.checked);
+
+  }catch(err){
+    setMsg("Error: " + (err?.message || String(err)));
+  }finally{
+    clearTimeout(timeout);
+    setBusy(false);
+  }
+}
+
+function setOverlayOut(text, show){
+  const box = document.getElementById("overlayBoxOut");
+  box.textContent = text;
+  box.style.display = show ? "block" : "none";
+}
+</script>
+
+<!-- Progress row -->
+<div class="row" style="margin-top:8px;">
+  <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
+</div>
+
 </body>
 </html>
