@@ -1,7 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-import cv2, numpy as np, tempfile
+import cv2, numpy as np, tempfile, time
 
 app = FastAPI()
 
@@ -16,7 +16,15 @@ def index():
 def health():
     return {"ok": True}
 
-# ---------- Adaptive Equalizer Core ----------
+@app.head("/")
+def head_root():
+    return Response(status_code=200)
+
+@app.head("/api/health")
+def head_health():
+    return Response(status_code=200)
+
+# ----------------- Equalizer core -----------------
 def _to_float(img: np.ndarray):
     info = {"dtype": img.dtype, "scale": 1.0}
     if img.dtype == np.uint8:
@@ -38,11 +46,14 @@ def gaussian_blur(img,k,sigma_perc=0.33):
     return cv2.GaussianBlur(img,(k,k),sigmaX=sigma,sigmaY=sigma,borderType=cv2.BORDER_REPLICATE)
 
 def local_std(img,k):
-    mu  = cv2.boxFilter(img,-1,(k,k),normalize=True)
-    mu2 = cv2.boxFilter(img*img,-1,(k,k),normalize=True)
+    mu  = cv2.boxFilter(img,-1,(k,k),normalize=True, borderType=cv2.BORDER_REFLECT)
+    mu2 = cv2.boxFilter(img*img,-1,(k,k),normalize=True, borderType=cv2.BORDER_REFLECT)
     return np.sqrt(np.maximum(0,mu2-mu*mu)+1e-12)
 
-def build_kernel_list(max_kernel): return list(range(3,max_kernel+1,2))
+def build_kernel_list(max_kernel): 
+    if max_kernel < 3 or max_kernel % 2 == 0:
+        raise ValueError("max_kernel must be odd and >= 3")
+    return list(range(3,max_kernel+1,2))
 
 def compute_bands(img,kernels,sigma_perc,sign):
     blurs=[gaussian_blur(img,k,sigma_perc) for k in kernels]
@@ -70,7 +81,7 @@ def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="
     ks=build_kernel_list(max_kernel)
     bands=compute_bands(f,ks,sigma_perc,sign)
     ws=inverse_weights(compute_variations(f,ks),gamma)
-    total=np.zeros_like(f)
+    total=np.zeros_like(f, dtype=np.float32)
     for b,w in zip(bands,ws):
         if f.ndim==3 and w.ndim==2: w=w[...,None]
         total+=w*b
@@ -82,12 +93,18 @@ def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="
     out=np.clip(f+total,0,1)
     return _from_float(out,info)
 
-# ---------- API ----------
+# ----------------- API -----------------
+MAX_BYTES = 12 * 1024 * 1024  # 12 MB
+ALLOWED_TYPES = {"image/jpeg","image/png","image/webp"}
+
 def process_image(buf,max_kernel,sigma_perc,alpha,gamma,sign,preserve):
     img=cv2.imdecode(np.frombuffer(buf,np.uint8),cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError("Failed to decode image (unsupported format or empty).")
+        raise ValueError("Failed to decode image. Use JPG/PNG/WEBP.")
+    t0=time.time()
     out=apply_equalizer(img,max_kernel,sigma_perc,alpha,gamma,sign,preserve)
+    dt=time.time()-t0
+    print(f"[equalizer] size={img.shape} max_k={max_kernel} took={dt:.2f}s")
     tmp=tempfile.NamedTemporaryFile(delete=False,suffix=".png")
     cv2.imwrite(tmp.name,out); return tmp.name
 
@@ -102,8 +119,16 @@ async def api_process(
     preserve_mean:bool=Form(True),
 ):
     try:
+        if file.content_type not in ALLOWED_TYPES:
+            return JSONResponse({"error": f"Unsupported type {file.content_type}. Use JPG/PNG/WEBP."}, status_code=415)
         buf=await file.read()
+        if not buf:
+            return JSONResponse({"error":"Empty upload"}, status_code=400)
+        if len(buf) > MAX_BYTES:
+            return JSONResponse({"error": f"File too large (> {MAX_BYTES//1024//1024} MB)"}, status_code=413)
         out=process_image(buf,max_kernel,sigma_perc,alpha,gamma,band_sign,preserve_mean)
         return FileResponse(out,media_type="image/png",filename="result.png")
     except Exception as e:
+        # Log full error server-side and return message to client
+        print("[api_process] ERROR:", repr(e))
         return JSONResponse({"error":str(e)},status_code=400)
