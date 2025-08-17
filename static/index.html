@@ -9,9 +9,18 @@
     label { font-size:12px; display:block; opacity:.85; }
     input[type=range]{ width:240px; }
     img { max-width:100%; border-radius:6px; }
-    button{padding:8px 14px;}
+    button{padding:8px 14px; cursor:pointer;}
+    button[disabled]{ opacity:.6; cursor:not-allowed; }
     #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
     .val { min-width: 42px; display:inline-block; text-align:right; }
+    #progressWrap { display:none; align-items:center; gap:10px; }
+    #progressText { font-size:12px; opacity:.8; }
+    /* Simple spinner */
+    .spinner {
+      width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #333;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -35,7 +44,7 @@
   <div class="row">
     <div>
       <label>alpha: <span id="alpha_val" class="val">1.00</span></label>
-      <input type="range" id="alpha" min="0" max="3" step="0.05" value="1" oninput="sync('alpha')"/>
+      <input type="range" id="alpha" min="0" max="15" step="0.1" value="1" oninput="sync('alpha')"/>
     </div>
     <div>
       <label>gamma: <span id="gamma_val" class="val">1.20</span></label>
@@ -55,8 +64,12 @@
   </div>
 
   <div class="row">
-    <button onclick="process()">Process</button>
+    <button id="processBtn" onclick="process()">Process</button>
     <a id="downloadLink" style="display:none;margin-left:8px;">Download</a>
+    <div id="progressWrap">
+      <div class="spinner" aria-hidden="true"></div>
+      <span id="progressText">Processing…</span>
+    </div>
   </div>
 
   <div id="msg"></div>
@@ -80,7 +93,7 @@ function sync(id){
   );
   if (span) span.textContent = (id==='max_kernel') ? v : (+v).toFixed(2);
 }
-async function preview(){
+function preview(){
   setMsg('');
   const file = document.getElementById("fileInput").files[0];
   if (!file) return;
@@ -89,17 +102,28 @@ async function preview(){
   prev.src = url; prev.style.display = "block";
 }
 
+function setBusy(busy){
+  const btn = document.getElementById('processBtn');
+  const file = document.getElementById('fileInput');
+  const progressWrap = document.getElementById('progressWrap');
+  btn.disabled = busy;
+  file.disabled = busy;
+  progressWrap.style.display = busy ? 'inline-flex' : 'none';
+}
+
 async function process(){
+  // Guard: prevent double-clicks
+  if (document.getElementById('processBtn').disabled) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000); // 3 min safety timeout
+
   try{
     setMsg('');
     const file = document.getElementById("fileInput").files[0];
     if (!file){ setMsg("Choose an image first."); return; }
 
-    // Quick backend check (optional)
-    try {
-      const h = await fetch(apiUrl('api/health'));
-      if(!h.ok){ setMsg("Backend not ready. Try again in a moment."); return; }
-    } catch(e) { setMsg("Cannot reach backend."); return; }
+    setBusy(true);
 
     const fd = new FormData();
     fd.append("file", file);
@@ -110,11 +134,15 @@ async function process(){
     fd.append("band_sign", band_sign.value);
     fd.append("preserve_mean", preserve_mean.checked ? "true" : "false");
 
-    const r = await fetch(apiUrl('api/process'), { method: "POST", body: fd });
+    const r = await fetch(apiUrl('api/process'), {
+      method: "POST",
+      body: fd,
+      signal: controller.signal
+    });
+
     if (!r.ok){
-      const text = await r.text();
-      setMsg("Error: " + text);
-      return;
+      const text = await r.text().catch(()=>"(no details)");
+      throw new Error(text);
     }
 
     const blob = await r.blob();
@@ -124,7 +152,11 @@ async function process(){
     const dl = document.getElementById("downloadLink");
     dl.href = url; dl.download = "result.png"; dl.style.display = "inline";
   }catch(err){
-    setMsg("Unexpected error: " + (err?.message || err));
+    const msg = (err && err.name === 'AbortError') ? "Request timed out." : (err?.message || String(err));
+    setMsg("Error: " + msg);
+  }finally{
+    clearTimeout(timeout);
+    setBusy(false);
   }
 }
 </script>
