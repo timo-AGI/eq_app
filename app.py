@@ -24,6 +24,10 @@ def head_root():
 def head_health():
     return Response(status_code=200)
 
+# ----------------- Fixed parameters -----------------
+FIXED_SIGMA_PERC = 0.05
+FIXED_MAX_KERNEL = 25
+
 # ----------------- Equalizer core -----------------
 def _to_float(img: np.ndarray):
     info = {"dtype": img.dtype, "scale": 1.0}
@@ -134,12 +138,11 @@ ALLOWED_TYPES = {"image/jpeg","image/png","image/webp"}
 @app.post("/api/process")
 async def api_process(
     file: UploadFile=File(...),
-    max_kernel:int=Form(63),
-    sigma_perc:float=Form(0.33),
     alpha:float=Form(1.0),
     gamma:float=Form(1.2),
     band_sign:str=Form("dog"),
     preserve_mean:bool=Form(True),
+    do_modulation:bool=Form(False),       # NEW: toggle modulation on/off
     n_controls:int=Form(5),
     gains_csv:str=Form("1,1,1,1,1"),
 ):
@@ -154,32 +157,51 @@ async def api_process(
         img=cv2.imdecode(np.frombuffer(buf,np.uint8),cv2.IMREAD_COLOR)
         if img is None: return JSONResponse({"error":"Decode failed. Use JPG/PNG/WEBP."}, status_code=400)
 
-        kernels = build_kernel_list(max_kernel)
+        kernels = build_kernel_list(FIXED_MAX_KERNEL)
         n_bands = len(kernels)
-        gains_full = expand_gains(n_controls, gains_csv, n_bands)
 
-        # Produce both versions
-        equalized = apply_equalizer(img, max_kernel, sigma_perc, alpha, gamma, band_sign, preserve_mean, per_band_gain=1.0)
-        modulated = apply_equalizer(img, max_kernel, sigma_perc, alpha, gamma, band_sign, preserve_mean, per_band_gain=gains_full)
+        # Equalized (per_band_gain = 1.0)
+        equalized = apply_equalizer(
+            img,
+            max_kernel=FIXED_MAX_KERNEL,
+            sigma_perc=FIXED_SIGMA_PERC,
+            alpha=alpha, gamma=gamma,
+            sign=band_sign, preserve_mean=preserve_mean,
+            per_band_gain=1.0
+        )
 
-        # Encode as base64 (to return JSON with three images)
+        # Optional: Modulated
+        mod_b64 = None
+        if do_modulation:
+            gains_full = expand_gains(n_controls, gains_csv, n_bands)
+            modulated = apply_equalizer(
+                img,
+                max_kernel=FIXED_MAX_KERNEL,
+                sigma_perc=FIXED_SIGMA_PERC,
+                alpha=alpha, gamma=gamma,
+                sign=band_sign, preserve_mean=preserve_mean,
+                per_band_gain=gains_full
+            )
+            mod_b64 = _encode_png_b64(modulated)
+
+        # Encode base64
         orig_b64 = _encode_png_b64(img)
         eq_b64   = _encode_png_b64(equalized)
-        mod_b64  = _encode_png_b64(modulated)
 
         return {
             "original_b64": orig_b64,
             "equalized_b64": eq_b64,
-            "modulated_b64": mod_b64,
-            "kernels": kernels,                   # e.g., [3,5,7,...,max_kernel]
+            "modulated_b64": mod_b64,           # may be None if modulation disabled
+            "kernels": kernels,
             "n_bands": n_bands,
             "params": {
-                "max_kernel": max_kernel,
-                "sigma_perc": sigma_perc,
+                "max_kernel": FIXED_MAX_KERNEL,
+                "sigma_perc": FIXED_SIGMA_PERC,
                 "alpha": alpha,
                 "gamma": gamma,
                 "band_sign": band_sign,
                 "preserve_mean": bool(preserve_mean),
+                "do_modulation": bool(do_modulation),
                 "n_controls": n_controls,
                 "gains_csv": gains_csv,
             }
