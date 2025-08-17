@@ -155,11 +155,11 @@ function preview(){
   document.getElementById("imgOriginal").src = url; // quick preview for original
 }
 
-/* ---------- Modulation knobs + curve (Chart.js numeric X) ---------- */
-let gains = []; // N control points [0..4]
+/* ---------- Modulation knobs + curve (Chart.js) ---------- */
+let gains = [];     // N control points [0..4]
 let chart = null;
-let kernels = []; // full band kernel sizes from server
-let nBands = 0;
+let kernels = [];   // kernel sizes from server for tick labels
+let nBands = 0;     // number of full bands; before processing we use gains.length
 
 // plugin to draw y=1 horizontal line
 const unityLine = {
@@ -218,18 +218,33 @@ function renderSliders(){
   });
 }
 
+/* ----- Curve helpers with provisional bands before processing ----- */
+function makeInterpolatedCurve(){
+  const nb = nBands || gains.length;               // use N knobs until we know full band count
+  if (!nb || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
+  const xs = Array.from({length: nb}, (_,i)=> i);
+  const ys = interp1(xCtrl, gains, xs);
+  return xs.map((x,i)=> ({x, y: ys[i]}));
+}
+
+function controlDatasetPoints(){
+  const nb = nBands || gains.length;
+  if (!nb || !gains.length) return [];
+  const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
+  return xCtrl.map((x,i)=> ({x, y: gains[i]}));
+}
+
 function renderChart(){
   const ctx = document.getElementById('curveCanvas').getContext('2d');
   if (chart){ chart.destroy(); }
-  // numeric x-axis: 0..(nBands-1)
+  const nb = nBands || gains.length;                // provisional count
   chart = new Chart(ctx, {
     type: 'line',
     data: {
       datasets: [
-        // full interpolated curve across all bands (will be updated later)
-        { label:'Interpolated', data: [], borderWidth:2, pointRadius:0, fill:false, tension:0.0 },
-        // control points as scatter-like line with points
-        { label:'Controls', data: [], borderWidth:2, pointRadius:3, fill:false, tension:0.0 }
+        { label:'Interpolated', data: makeInterpolatedCurve(), borderWidth:2, pointRadius:0, fill:false, tension:0.0 },
+        { label:'Controls',     data: controlDatasetPoints(),  borderWidth:2, pointRadius:3, fill:false, tension:0.0 }
       ]
     },
     plugins: [unityLine],
@@ -241,16 +256,21 @@ function renderChart(){
         x: {
           type: 'linear',
           min: 0,
+          max: Math.max(0, nb-1),
           ticks: {
             callback: (val) => {
               const idx = Math.round(val);
-              if (!kernels.length) return idx;
-              // Show every 2nd or 3rd label to avoid clutter
-              if (idx % 2 === 1) return ''; 
-              return `${kernels[idx]}×${kernels[idx]}`;
+              if (idx < 0) return '';
+              // If we have kernel sizes from the server, show them; otherwise show control indices (1..N)
+              if (kernels && kernels.length && idx < kernels.length) {
+                if (idx % 2 === 1) return '';  // skip every other to reduce clutter
+                return `${kernels[idx]}×${kernels[idx]}`;
+              } else {
+                return (idx % 1 === 0) ? `b${idx+1}` : '';
+              }
             }
           },
-          title:{display:true, text:'Bands (by kernel size)'}
+          title:{display:true, text:'Bands'}
         },
         y: { min: 0, max: 4, title:{display:true, text:'Gain (0..4)'} }
       },
@@ -259,25 +279,10 @@ function renderChart(){
   });
 }
 
-function makeInterpolatedCurve(){
-  if (!nBands || !gains.length) return [];
-  const xCtrl = gains.length === 1 ? [0] : linspace(0, nBands-1, gains.length);
-  const xs = Array.from({length: nBands}, (_,i)=> i);
-  const ys = interp1(xCtrl, gains, xs);
-  return xs.map((x,i)=> ({x, y: ys[i]}));
-}
-
-function controlDatasetPoints(){
-  if (!nBands || !gains.length) return [];
-  const xCtrl = gains.length === 1 ? [0] : linspace(0, nBands-1, gains.length);
-  return xCtrl.map((x,i)=> ({x, y: gains[i]}));
-}
-
 function updateChartData(){
   if (!chart) return;
-  // dataset 0 = interpolated full curve
+  chart.options.scales.x.max = Math.max(0, (nBands || gains.length) - 1);
   chart.data.datasets[0].data = makeInterpolatedCurve();
-  // dataset 1 = control points
   chart.data.datasets[1].data = controlDatasetPoints();
   chart.update();
 }
@@ -346,7 +351,7 @@ async function process(){
     }
     const data = await r.json();
 
-    // update kernels/ticks for chart
+    // update kernels/ticks and band count for chart
     kernels = data.kernels || [];
     nBands = data.n_bands || (kernels?.length || 0);
     renderChart();
