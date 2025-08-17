@@ -2,92 +2,85 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>Adaptive Image Equalizer</title>
+  <title>Adaptive Equalizer</title>
   <style>
-    body { font-family: system-ui, Arial; max-width: 980px; margin: 24px auto; padding: 0 12px; }
-    .row { display:flex; gap:16px; flex-wrap:wrap; margin:12px 0; }
-    label { display:block; font-size:12px; opacity:.8; }
-    input[type="number"] { width:120px; }
-    .card { padding:12px; border:1px solid #e5e5e5; border-radius:10px; }
-    img { max-width:100%; height:auto; border-radius:8px; }
-    button { padding:8px 14px; border-radius:8px; border:1px solid #bbb; background:#f7f7f7; cursor:pointer; }
-    button:active { transform: translateY(1px); }
+    body { font-family: Arial; max-width:900px; margin:20px auto; }
+    .row { display:flex; gap:20px; margin:10px 0; flex-wrap:wrap; }
+    label { font-size:12px; display:block; }
+    input[type=range]{ width:220px; }
+    img { max-width:100%; margin-top:10px; border-radius:6px; }
+    button{padding:6px 12px;}
   </style>
 </head>
 <body>
-  <h2>Adaptive Image Equalizer</h2>
-  <div class="card">
-    <div class="row">
-      <div>
-        <label>Upload image</label>
-        <input type="file" id="fileInput" accept="image/*"/>
-      </div>
-      <div>
-        <label>max_kernel (odd ≥3)</label>
-        <input type="number" id="max_kernel" value="63" step="2" min="3" max="127"/>
-      </div>
-      <div>
-        <label>sigma_perc</label>
-        <input type="number" id="sigma_perc" value="0.33" step="0.01" min="0.05" max="0.8"/>
-      </div>
-      <div>
-        <label>alpha</label>
-        <input type="number" id="alpha" value="1.0" step="0.05" min="0" max="3"/>
-      </div>
-      <div>
-        <label>gamma</label>
-        <input type="number" id="gamma" value="1.2" step="0.05" min="0.5" max="3"/>
-      </div>
-      <div>
-        <label>band_sign</label>
-        <select id="band_sign">
-          <option value="dog" selected>dog</option>
-          <option value="literal">literal</option>
-        </select>
-      </div>
-      <div>
-        <label>preserve_mean</label>
-        <input type="checkbox" id="preserve_mean" checked/>
-      </div>
+  <h2>Adaptive Equalizer</h2>
+  <div>
+    <input type="file" id="fileInput" accept="image/*" onchange="preview()"/>
+  </div>
+  <div class="row">
+    <div>
+      <label>alpha <span id="alpha_val">1.0</span></label>
+      <input type="range" id="alpha" min="0" max="3" step="0.05" value="1" oninput="sync('alpha')"/>
     </div>
-    <div class="row">
-      <button onclick="process()">Process</button>
-      <a id="downloadLink" style="display:none; margin-left:8px;">Download result</a>
+    <div>
+      <label>gamma <span id="gamma_val">1.2</span></label>
+      <input type="range" id="gamma" min="0.5" max="3" step="0.05" value="1.2" oninput="sync('gamma')"/>
     </div>
   </div>
-
-  <div class="card" style="margin-top:16px;">
+  <div class="row">
+    <div>
+      <label>sigma <span id="sigma_val">0.33</span></label>
+      <input type="range" id="sigma_perc" min="0.05" max="0.8" step="0.01" value="0.33" oninput="sync('sigma_perc')"/>
+    </div>
+    <div>
+      <label>max_kernel <span id="mk_val">63</span></label>
+      <input type="range" id="max_kernel" min="3" max="127" step="2" value="63" oninput="sync('max_kernel')"/>
+    </div>
+  </div>
+  <div class="row">
+    <select id="band_sign">
+      <option value="dog">dog</option>
+      <option value="literal">literal</option>
+    </select>
+    <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
+  </div>
+  <button onclick="process()">Process</button>
+  <a id="downloadLink" style="display:none;margin-left:8px;">Download</a>
+  <div>
+    <h3>Preview</h3>
+    <img id="previewImg" style="display:none"/>
     <h3>Result</h3>
-    <img id="resultImg" alt="Processed image will appear here"/>
+    <img id="resultImg"/>
   </div>
-
 <script>
-async function process() {
-  const file = document.getElementById("fileInput").files[0];
-  if (!file) { alert("Please choose an image."); return; }
-
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("max_kernel", document.getElementById("max_kernel").value);
-  fd.append("sigma_perc", document.getElementById("sigma_perc").value);
-  fd.append("alpha", document.getElementById("alpha").value);
-  fd.append("gamma", document.getElementById("gamma").value);
-  fd.append("band_sign", document.getElementById("band_sign").value);
-  fd.append("preserve_mean", document.getElementById("preserve_mean").checked ? "true" : "false");
-
-  const res = await fetch("/process", { method: "POST", body: fd });
-  if (!res.ok) { alert("Error: " + (await res.text())); return; }
-
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const img = document.getElementById("resultImg");
-  img.src = url;
-
-  const dl = document.getElementById("downloadLink");
-  dl.href = url;
-  dl.download = "output_equalized.png";
-  dl.textContent = "Download result";
-  dl.style.display = "inline-block";
+function sync(id){
+  let v=document.getElementById(id).value;
+  document.getElementById(id+'_val').innerText=+v;
+}
+function preview(){
+  let f=document.getElementById("fileInput").files[0];
+  if(!f) return;
+  let url=URL.createObjectURL(f);
+  document.getElementById("previewImg").src=url;
+  document.getElementById("previewImg").style.display="block";
+}
+async function process(){
+  let f=document.getElementById("fileInput").files[0];
+  if(!f){alert("Choose an image");return;}
+  let fd=new FormData();
+  fd.append("file",f);
+  fd.append("alpha",alpha.value);
+  fd.append("gamma",gamma.value);
+  fd.append("sigma_perc",sigma_perc.value);
+  fd.append("max_kernel",max_kernel.value);
+  fd.append("band_sign",band_sign.value);
+  fd.append("preserve_mean",preserve_mean.checked?"true":"false");
+  let r=await fetch("/api/process",{method:"POST",body:fd});
+  if(!r.ok){alert("Error:"+await r.text());return;}
+  let blob=await r.blob(); let url=URL.createObjectURL(blob);
+  resultImg.src=url;
+  let dl=document.getElementById("downloadLink");
+  dl.href=url; dl.download="result.png"; dl.style.display="inline";
 }
 </script>
 </body>
