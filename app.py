@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-import cv2, numpy as np, tempfile, time, base64
+import cv2, numpy as np, base64
 
 app = FastAPI()
 
@@ -109,17 +109,14 @@ def apply_equalizer(img,max_kernel=63,sigma_perc=0.33,alpha=1.0,gamma=1.2,sign="
     out=np.clip(f+total,0,1)
     return _from_float(out,info)
 
-# ------- Expand N control points to full per-band gains (linear) ------
 def expand_gains(n_controls, gains_csv, n_bands):
     vals=[v for v in gains_csv.replace(' ','').split(',') if v!='']
     arr=np.array([float(x) for x in vals], dtype=np.float32)
     if len(arr)!=n_controls:
         raise ValueError(f"Expected {n_controls} gains, got {len(arr)}")
     arr=np.clip(arr, 0.0, 4.0)
-
     if n_controls==n_bands:
         return arr.tolist()
-
     x_ctrl = np.linspace(0, n_bands-1, n_controls, dtype=np.float32)
     x_full = np.arange(n_bands, dtype=np.float32)
     full   = np.interp(x_full, x_ctrl, arr)
@@ -142,7 +139,7 @@ async def api_process(
     gamma:float=Form(1.2),
     band_sign:str=Form("dog"),
     preserve_mean:bool=Form(True),
-    do_modulation:bool=Form(False),       # NEW: toggle modulation on/off
+    do_modulation:bool=Form(False),
     n_controls:int=Form(5),
     gains_csv:str=Form("1,1,1,1,1"),
 ):
@@ -153,28 +150,15 @@ async def api_process(
         if not buf: return JSONResponse({"error":"Empty upload"}, status_code=400)
         if len(buf)>MAX_BYTES: return JSONResponse({"error":"File too large (>12MB)"}, status_code=413)
 
-        # Decode original
         img=cv2.imdecode(np.frombuffer(buf,np.uint8),cv2.IMREAD_COLOR)
         if img is None: return JSONResponse({"error":"Decode failed. Use JPG/PNG/WEBP."}, status_code=400)
 
         kernels = build_kernel_list(FIXED_MAX_KERNEL)
         n_bands = len(kernels)
 
-        # Equalized (per_band_gain = 1.0)
-        equalized = apply_equalizer(
-            img,
-            max_kernel=FIXED_MAX_KERNEL,
-            sigma_perc=FIXED_SIGMA_PERC,
-            alpha=alpha, gamma=gamma,
-            sign=band_sign, preserve_mean=preserve_mean,
-            per_band_gain=1.0
-        )
-
-        # Optional: Modulated
-        mod_b64 = None
         if do_modulation:
             gains_full = expand_gains(n_controls, gains_csv, n_bands)
-            modulated = apply_equalizer(
+            out_img = apply_equalizer(
                 img,
                 max_kernel=FIXED_MAX_KERNEL,
                 sigma_perc=FIXED_SIGMA_PERC,
@@ -182,16 +166,18 @@ async def api_process(
                 sign=band_sign, preserve_mean=preserve_mean,
                 per_band_gain=gains_full
             )
-            mod_b64 = _encode_png_b64(modulated)
-
-        # Encode base64
-        orig_b64 = _encode_png_b64(img)
-        eq_b64   = _encode_png_b64(equalized)
+        else:
+            out_img = apply_equalizer(
+                img,
+                max_kernel=FIXED_MAX_KERNEL,
+                sigma_perc=FIXED_SIGMA_PERC,
+                alpha=alpha, gamma=gamma,
+                sign=band_sign, preserve_mean=preserve_mean,
+                per_band_gain=1.0
+            )
 
         return {
-            "original_b64": orig_b64,
-            "equalized_b64": eq_b64,
-            "modulated_b64": mod_b64,           # may be None if modulation disabled
+            "output_b64": _encode_png_b64(out_img),
             "kernels": kernels,
             "n_bands": n_bands,
             "params": {
@@ -202,8 +188,8 @@ async def api_process(
                 "band_sign": band_sign,
                 "preserve_mean": bool(preserve_mean),
                 "do_modulation": bool(do_modulation),
-                "n_controls": n_controls,
-                "gains_csv": gains_csv,
+                "n_controls": n_controls if do_modulation else None,
+                "gains_csv": gains_csv if do_modulation else None,
             }
         }
     except Exception as e:
