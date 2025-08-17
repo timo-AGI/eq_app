@@ -5,7 +5,7 @@ import cv2, numpy as np, tempfile, time
 
 app = FastAPI()
 
-# Serve static files at /static and homepage at /
+# Serve static and homepage
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
@@ -154,7 +154,7 @@ async def api_process(
         if not buf: return JSONResponse({"error":"Empty upload"}, status_code=400)
         if len(buf)>MAX_BYTES: return JSONResponse({"error":"File too large (>12MB)"}, status_code=413)
 
-        n_bands = len(build_kernel_list(max_kernel))  # bands = number of kernel sizes
+        n_bands = len(build_kernel_list(max_kernel))
         gains_full = expand_gains(n_controls, gains_csv, n_bands)
 
         out_path=process_image(buf,max_kernel,sigma_perc,alpha,gamma,band_sign,preserve_mean, gains_full)
