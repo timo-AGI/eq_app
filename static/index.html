@@ -74,7 +74,7 @@
   </div>
 </div>
 
-<!-- Equalization SECOND (checkbox directly under modulation checkbox) -->
+<!-- Equalization SECOND (hidden unless checkbox is on) -->
 <div class="sectionTitle">Equalization</div>
 <div class="row">
   <label><input type="checkbox" id="enable_eq" onchange="toggleEqualization();updateProcessEnabled();"/> enable equalization</label>
@@ -143,7 +143,6 @@ function onImageChosen(){
   setMsg('');
   const f=document.getElementById("fileInput").files[0];
   const hasImage = !!f;
-  // Show/hide original card and process button
   document.getElementById("origCard").classList.toggle('hide', !hasImage);
   document.getElementById("processBtn").classList.toggle('hide', !hasImage);
 
@@ -186,7 +185,7 @@ function toggleEqualization(){
 /* ---------- Modulation knobs + curve (Chart.js) ---------- */
 let gains = [];     // N control points [0..10]
 let chart = null;
-let kernels = [];   // kernel sizes from server
+let kernels = [];   // kernel sizes from server (for x-axis tick labels)
 let nBands = 0;     // total bands; before processing use gains.length
 
 const unityLine = {
@@ -342,7 +341,6 @@ function setBusy(b){
 /* ---------- Processing ---------- */
 async function process(){
   if (!canProcess()) return;
-  // hide output card until result is ready
   document.getElementById('outCard').classList.add('hide');
 
   const controller = new AbortController();
@@ -360,7 +358,7 @@ async function process(){
     const fd = new FormData();
     fd.append("file", file);
 
-    // Equalization-only fields if enabled
+    // Equalization fields (only if enabled)
     fd.append("do_equalize", do_eq ? "true" : "false");
     if (do_eq){
       fd.append("alpha", document.getElementById('alpha').value);
@@ -368,11 +366,11 @@ async function process(){
       fd.append("band_sign", document.getElementById('band_sign').value);
       fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
     } else {
-      // Provide preserve_mean even if eq is off, because modulation-only still uses it in pipeline
+      // Still pass preserve_mean for pipeline; overlay suppression handled on server
       fd.append("preserve_mean", document.getElementById('preserve_mean').checked ? "true" : "false");
     }
 
-    // Modulation fields if enabled
+    // Modulation fields (only if enabled)
     fd.append("do_modulation", do_mod ? "true" : "false");
     if (do_mod){
       fd.append("n_controls", String(gains.length));
@@ -394,7 +392,7 @@ async function process(){
       updateChartData();
     }
 
-    // set output image and reveal the card
+    // show result
     const outUrl = "data:image/png;base64," + data.output_b64;
     document.getElementById("imgOutput").src = outUrl;
     document.getElementById("outCard").classList.remove('hide');
@@ -403,7 +401,7 @@ async function process(){
     const dlOut = document.getElementById("downloadLinkOut");
     dlOut.href = outUrl; dlOut.download = "output.png"; dlOut.style.display = "inline";
 
-    // overlay params
+    // ------- Overlay (NO preserve_mean when modulation-only) -------
     const p = data.params || {};
     let overlay = "";
     if (p.do_equalize){
@@ -413,19 +411,18 @@ async function process(){
         `  sigma: ${Number(p.sigma_perc).toFixed(2)}\n` +
         `  alpha: ${Number(p.alpha).toFixed(2)}\n` +
         `  gamma: ${Number(p.gamma).toFixed(2)}\n` +
-        `  band_sign: ${p.band_sign}\n`;
+        `  band_sign: ${p.band_sign}\n` +
+        `  preserve_mean: ${p.preserve_mean}\n`;
     }
     if (p.do_modulation){
       overlay +=
-        (overlay ? "" : "") +
         `MOD:\n` +
         `  N: ${p.n_controls}\n` +
         `  gains: ${p.gains_csv}\n`;
     }
-    overlay += `preserve_mean: ${p.preserve_mean}`;
 
-    setOverlayOut(overlay, document.getElementById("overlayOut").checked);
-    document.getElementById("overlayOut").onchange = (e)=> setOverlayOut(overlay, e.target.checked);
+    setOverlayOut(overlay.trim(), document.getElementById("overlayOut").checked);
+    document.getElementById("overlayOut").onchange = (e)=> setOverlayOut(overlay.trim(), e.target.checked);
 
   }catch(err){
     setMsg("Error: " + (err?.message || String(err)));
