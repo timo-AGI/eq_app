@@ -22,31 +22,25 @@
   #modWrap{ border:1px solid #e5e5e5; border-radius:10px; padding:12px; }
   #curveArea{ display:flex; flex-direction:column; align-items:center; }
   #curveCanvas{ width: 900px; height: 240px; }
-  /* Sliders aligned under curve points */
   #slidersRow{ display:flex; justify-content:space-between; width:900px; margin-top:14px; }
   .knobCol{ display:flex; flex-direction:column; align-items:center; user-select:none; }
-  .knobCol input[type=range]{
-    writing-mode: bt-lr; -webkit-appearance: slider-vertical;
-    height: 150px; width: 28px;
-  }
+  .knobCol input[type=range]{ writing-mode: bt-lr; -webkit-appearance: slider-vertical; height: 150px; width: 28px; }
   .knobLabel{ font-size:11px; margin-top:6px; }
 
-  /* Image grids + overlays */
-  .imgGrid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
+  /* Cards + overlays */
+  .grid2{ display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; }
   .imgCard{ position:relative; border:1px solid #e5e5e5; border-radius:10px; padding:10px; }
   .imgTitle{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
   .overlayBox{
     position:absolute; top:10px; right:10px;
     background:rgba(0,0,0,0.6); color:#fff; padding:6px 8px;
-    font-size:12px; border-radius:6px; max-width:45%; line-height:1.25;
+    font-size:12px; border-radius:6px; max-width:55%; line-height:1.25;
     display:none;
   }
-  /* Hide the 3rd column when modulation disabled */
-  .hideMod .imgGrid { grid-template-columns: repeat(2, 1fr); }
   .hide { display:none !important; }
 </style>
 </head>
-<body class="hideMod">
+<body>
 <h2>Adaptive Equalizer</h2>
 
 <div class="row">
@@ -65,7 +59,7 @@
 
   <label><input type="checkbox" id="preserve_mean" checked/> preserve mean</label>
 
-  <!-- NEW: Enable modulation -->
+  <!-- Enable modulation -->
   <label><input type="checkbox" id="enable_mod" onchange="toggleModulation()"/> enable modulation</label>
 </div>
 
@@ -99,39 +93,26 @@
 
 <div class="row">
   <button id="processBtn" onclick="process()">Process</button>
-  <a id="downloadLinkEq" style="display:none;margin-left:8px;">Download Equalized</a>
-  <a id="downloadLinkMod" class="hide" style="margin-left:8px;">Download Modulated</a>
+  <a id="downloadLinkOut" style="display:none;margin-left:8px;">Download Output</a>
   <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
 </div>
 
 <div id="msg"></div>
 
-<!-- Results grid -->
-<div class="imgGrid">
+<!-- Results -->
+<div class="grid2">
   <div class="imgCard">
-    <div class="imgTitle">
-      <strong>Original</strong>
-      <!-- No overlay checkbox; original never shows overlay -->
-    </div>
+    <div class="imgTitle"><strong>Original</strong></div>
     <img id="imgOriginal" alt="Original"/>
   </div>
 
   <div class="imgCard">
     <div class="imgTitle">
-      <strong>Equalized (no modulation)</strong>
-      <label><input type="checkbox" id="overlayEq" checked/> overlay parameters</label>
+      <strong>Output</strong>
+      <label><input type="checkbox" id="overlayOut" checked/> overlay parameters</label>
     </div>
-    <div class="overlayBox" id="overlayBoxEq"></div>
-    <img id="imgEqualized" alt="Equalized"/>
-  </div>
-
-  <div class="imgCard" id="modCard" class="hide">
-    <div class="imgTitle">
-      <strong>Modulated</strong>
-      <label><input type="checkbox" id="overlayMod" checked/> overlay parameters</label>
-    </div>
-    <div class="overlayBox" id="overlayBoxMod"></div>
-    <img id="imgModulated" alt="Modulated"/>
+    <div class="overlayBox" id="overlayBoxOut"></div>
+    <img id="imgOutput" alt="Output"/>
   </div>
 </div>
 
@@ -148,19 +129,14 @@ function preview(){
   const f=document.getElementById("fileInput").files[0];
   if(!f) return;
   const url=URL.createObjectURL(f);
-  document.getElementById("imgOriginal").src = url; // quick preview for original
+  document.getElementById("imgOriginal").src = url;
 }
 
-/* ---------- Enable/Disable modulation panel ---------- */
 function toggleModulation(){
   const enabled = document.getElementById('enable_mod').checked;
   document.getElementById('modWrap').classList.toggle('hide', !enabled);
-  document.body.classList.toggle('hideMod', !enabled);
-  document.getElementById('downloadLinkMod').classList.toggle('hide', !enabled);
-  document.getElementById('modCard').classList.toggle('hide', !enabled);
-
   if (enabled){
-    if (!gains.length) applyKnobs(); // init default knobs if first time
+    if (!gains.length) applyKnobs();
     else { renderChart(); updateChartData(); }
   }
 }
@@ -168,10 +144,9 @@ function toggleModulation(){
 /* ---------- Modulation knobs + curve (Chart.js) ---------- */
 let gains = [];     // N control points [0..4]
 let chart = null;
-let kernels = [];   // kernel sizes from server for tick labels
-let nBands = 0;     // number of full bands; before processing we use gains.length
+let kernels = [];   // kernel sizes from server
+let nBands = 0;     // total bands; before processing use gains.length
 
-// plugin to draw y=1 horizontal line
 const unityLine = {
   id: 'unityLine',
   afterDraw(chart, args, opts) {
@@ -210,8 +185,7 @@ function renderSliders(){
     slider.value = String(v);
     slider.oninput = (e)=>{
       let val = parseFloat(e.target.value);
-      // snap-to-1 when close
-      if (Math.abs(val - 1.0) < 0.05) val = 1.0;
+      if (Math.abs(val - 1.0) < 0.05) val = 1.0; // snap to 1
       gains[i] = val;
       e.target.value = String(val);
       label.textContent = `b${i+1}: ${gains[i].toFixed(2)}`;
@@ -228,9 +202,8 @@ function renderSliders(){
   });
 }
 
-/* ----- Curve helpers with provisional bands before processing ----- */
 function makeInterpolatedCurve(){
-  const nb = nBands || gains.length;               // use N knobs until we know full band count
+  const nb = nBands || gains.length;
   if (!nb || !gains.length) return [];
   const xCtrl = gains.length === 1 ? [0] : linspace(0, nb-1, gains.length);
   const xs = Array.from({length: nb}, (_,i)=> i);
@@ -250,7 +223,7 @@ function renderChart(){
   if (!enabled) return;
   const ctx = document.getElementById('curveCanvas').getContext('2d');
   if (chart){ chart.destroy(); }
-  const nb = nBands || gains.length;                // provisional count
+  const nb = nBands || gains.length;
   chart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -273,9 +246,8 @@ function renderChart(){
             callback: (val) => {
               const idx = Math.round(val);
               if (idx < 0) return '';
-              // If we have kernel sizes from the server, show them; otherwise show control indices (1..N)
               if (kernels && kernels.length && idx < kernels.length) {
-                if (idx % 2 === 1) return '';  // skip every other to reduce clutter
+                if (idx % 2 === 1) return '';
                 return `${kernels[idx]}×${kernels[idx]}`;
               } else {
                 return (idx % 1 === 0) ? `b${idx+1}` : '';
@@ -304,15 +276,11 @@ function linspace(a,b,n){
   const step=(b-a)/(n-1);
   return Array.from({length:n},(_,i)=> a + i*step);
 }
-
 function interp1(x, y, xq){
-  // simple linear interpolation
-  const n = x.length;
-  const res = [];
+  const n = x.length, res = [];
   for (const q of xq){
     if (q <= x[0]) { res.push(y[0]); continue; }
     if (q >= x[n-1]) { res.push(y[n-1]); continue; }
-    // find interval
     let j=1; while (j<n && x[j] < q) j++;
     const x0=x[j-1], x1=x[j], y0=y[j-1], y1=y[j];
     const t = (q - x0) / (x1 - x0);
@@ -327,9 +295,6 @@ function setBusy(b){
   document.getElementById('fileInput').disabled = b;
   document.getElementById('progressWrap').style.display = b ? 'inline-flex' : 'none';
 }
-
-/* ---------- Init ---------- */
-document.body.classList.add('hideMod');  // start with modulation disabled
 
 /* ---------- Processing ---------- */
 async function process(){
@@ -365,7 +330,7 @@ async function process(){
     }
     const data = await r.json();
 
-    // update kernels/ticks and band count for chart (only if modulation is enabled)
+    // update kernels/ticks for chart if modulation is enabled
     kernels = data.kernels || [];
     nBands = data.n_bands || (kernels?.length || 0);
     if (do_mod){
@@ -373,17 +338,15 @@ async function process(){
       updateChartData();
     }
 
-    // show images
-    const origUrl = "data:image/png;base64," + data.original_b64;
-    const eqUrl   = "data:image/png;base64," + data.equalized_b64;
-    document.getElementById("imgOriginal").src = origUrl;
-    document.getElementById("imgEqualized").src = eqUrl;
+    // set output image
+    const outUrl = "data:image/png;base64," + data.output_b64;
+    document.getElementById("imgOutput").src = outUrl;
 
-    // downloads
-    const dlEq = document.getElementById("downloadLinkEq");
-    dlEq.href = eqUrl; dlEq.download = "equalized.png"; dlEq.style.display = "inline";
+    // download link
+    const dlOut = document.getElementById("downloadLinkOut");
+    dlOut.href = outUrl; dlOut.download = "output.png"; dlOut.style.display = "inline";
 
-    // overlays for Equalized
+    // overlay params
     const p = data.params || {};
     const eqText =
       `max_kernel: ${p.max_kernel}\n` +
@@ -392,27 +355,12 @@ async function process(){
       `gamma: ${Number(p.gamma).toFixed(2)}\n` +
       `band_sign: ${p.band_sign}\n` +
       `preserve_mean: ${p.preserve_mean}`;
-    setOverlayEq(eqText, document.getElementById("overlayEq").checked);
-    document.getElementById("overlayEq").onchange = (e)=> setOverlayEq(eqText, e.target.checked);
+    const outText = p.do_modulation
+      ? eqText + `\nN: ${p.n_controls}\n` + `gains: ${p.gains_csv}`
+      : eqText;
 
-    // Modulated branch (only when enabled and present)
-    const modLink = document.getElementById("downloadLinkMod");
-    const modCard = document.getElementById("modCard");
-    if (do_mod && data.modulated_b64){
-      const modUrl  = "data:image/png;base64," + data.modulated_b64;
-      document.getElementById("imgModulated").src = modUrl;
-      modLink.href = modUrl; modLink.download = "modulated.png";
-      modLink.classList.remove('hide');
-      modCard.classList.remove('hide');
-
-      const modText = eqText + `\nN: ${p.n_controls}\n` + `gains: ${p.gains_csv}`;
-      setOverlayMod(modText, document.getElementById("overlayMod").checked);
-      document.getElementById("overlayMod").onchange = (e)=> setOverlayMod(modText, e.target.checked);
-    } else {
-      // hide modulated UI if disabled or missing
-      modLink.classList.add('hide');
-      modCard.classList.add('hide');
-    }
+    setOverlayOut(outText, document.getElementById("overlayOut").checked);
+    document.getElementById("overlayOut").onchange = (e)=> setOverlayOut(outText, e.target.checked);
 
   }catch(err){
     setMsg("Error: " + (err?.message || String(err)));
@@ -422,19 +370,14 @@ async function process(){
   }
 }
 
-function setOverlayEq(text, show){
-  const box = document.getElementById("overlayBoxEq");
-  box.textContent = text;
-  box.style.display = show ? "block" : "none";
-}
-function setOverlayMod(text, show){
-  const box = document.getElementById("overlayBoxMod");
+function setOverlayOut(text, show){
+  const box = document.getElementById("overlayBoxOut");
   box.textContent = text;
   box.style.display = show ? "block" : "none";
 }
 </script>
 
-<!-- Progress row (placed at end so functions exist) -->
+<!-- Progress row -->
 <div class="row" style="margin-top:8px;">
   <div id="progressWrap"><div class="spinner"></div><span id="progressText">Processing…</span></div>
 </div>
