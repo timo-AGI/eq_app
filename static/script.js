@@ -48,13 +48,15 @@ function setNote(txt = "", isError = false) {
   note.style.color = isError ? '#b00' : 'var(--muted)';
 }
 
+
 // Always start unchecked
 toggle.checked = false;
 
-// pick audio source based on theme
 function currentThemeBgmSrc(){
-  const mode = themeSelect.value;
-  return (mode === 'dark') ? '/static/bgm_dark.mp3' : '/static/bgm_light.mp3';
+  const mode = document.getElementById('themeSelect').value;
+  // use the explicit endpoints; add a cache-buster in case browser cached a bad response
+  const base = (mode === 'dark') ? '/music/dark' : '/music/light';
+  return `${base}?v=${Date.now()}`;
 }
 
 // switch audio file (if playing, continue playing new file)
