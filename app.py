@@ -5,6 +5,23 @@ import cv2, numpy as np, base64
 
 app = FastAPI()
 
+
+@app.get("/music/light")
+def music_light():
+    return FileResponse(
+        "static/bgm_light.mp3",
+        media_type="audio/mpeg",
+        headers={"Accept-Ranges": "bytes"}
+    )
+
+@app.get("/music/dark")
+def music_dark():
+    return FileResponse(
+        "static/bgm_dark.mp3",
+        media_type="audio/mpeg",
+        headers={"Accept-Ranges": "bytes"}
+    )
+
 from starlette.middleware.cors import CORSMiddleware
 
 # (optional but fine to keep)
