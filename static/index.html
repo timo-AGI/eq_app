@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <title>Frequency Equaliser App</title>
-  <link rel="stylesheet" href="/static/style.css" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="bright-mode">
   <div id="app">
@@ -17,15 +17,11 @@
       <input type="file" id="imageUpload" accept="image/*">
     </div>
 
-    <!-- Original Image -->
-    <div id="originalImageContainer" style="display:none">
-      <h3>Original Image</h3>
-      <img id="originalImage" src="" alt="Original Image">
-    </div>
-
     <!-- Modulation -->
     <div class="panel">
-      <label class="check"><input type="checkbox" id="modulationCheckbox"> Enable Modulation</label>
+      <label class="check">
+        <input type="checkbox" id="modulationCheckbox"> Enable Modulation
+      </label>
       <div id="modulationControls" class="indent" style="display:none">
         <label for="numBands">Number of Bands:</label>
         <input type="number" id="numBands" value="5" min="1" max="10">
@@ -35,12 +31,16 @@
 
     <!-- Equalisation -->
     <div class="panel">
-      <label class="check"><input type="checkbox" id="equalisationCheckbox"> Enable Equalisation</label>
+      <label class="check">
+        <input type="checkbox" id="equalisationCheckbox"> Enable Equalisation
+      </label>
       <div id="equalisationControls" class="indent" style="display:none">
         <label for="gamma">Gamma:</label>
         <input type="number" id="gamma" value="1.0" step="0.1" min="0.1" max="5">
+
         <label for="alpha">Alpha:</label>
         <input type="number" id="alpha" value="1.0" step="0.1" min="0.1" max="10">
+
         <label for="band_sign">Band Sign:</label>
         <select id="band_sign">
           <option value="positive">Positive</option>
@@ -49,7 +49,7 @@
       </div>
     </div>
 
-    <!-- Theme & Music (side-by-side on wide screens) -->
+    <!-- Theme & Music -->
     <div class="row wrap">
       <div class="row">
         <label for="themeSelector">Theme:</label>
@@ -59,19 +59,28 @@
         </select>
       </div>
       <div class="row">
-        <label class="check"><input type="checkbox" id="musicCheckbox"> Enable Background Music</label>
+        <label class="check">
+          <input type="checkbox" id="musicCheckbox"> Enable Background Music
+        </label>
       </div>
     </div>
 
     <!-- Process Button -->
     <div class="row">
-      <button id="processButton" style="display:none">Process</button>
+      <button id="processButton" class="primary" style="display:none">Process</button>
     </div>
 
-    <!-- Output -->
-    <div id="outputImageContainer" style="display:none">
-      <h3>Processed Image</h3>
-      <img id="outputImage" src="" alt="Output Image">
+    <!-- Side-by-side Images -->
+    <div id="imageCompare" class="image-compare" style="display:none">
+      <div id="originalImageContainer">
+        <h3>Original Image</h3>
+        <img id="originalImage" src="" alt="Original Image">
+      </div>
+
+      <div id="outputImageContainer">
+        <h3>Processed Image</h3>
+        <img id="outputImage" src="" alt="Output Image">
+      </div>
     </div>
   </div>
 
