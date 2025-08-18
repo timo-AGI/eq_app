@@ -3,48 +3,92 @@
 <head>
   <meta charset="utf-8"/>
   <title>Adaptive Equalizer</title>
-  <link rel="preload" as="audio" href="/static/Soil Festivities.mp3">
+  <link rel="preload" as="audio" href="/static/bgm_light.mp3">
+  <link rel="preload" as="audio" href="/static/bgm_dark.mp3">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
   <style>
-    body { font-family: Arial, system-ui; max-width: 1100px; margin: 24px auto; padding: 0 12px; }
+    /* THEME VARIABLES */
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --muted: #666666;
+      --card-bg: #ffffff;
+      --border: #e5e5e5;
+      --accent: #0f62fe;
+      --overlay-bg: rgba(0,0,0,0.6);
+      --overlay-fg: #ffffff;
+    }
+    /* Blade Runner-ish dark mode */
+    .theme-dark {
+      --bg: #000000;
+      --fg: #ff8c00;       /* bright orange */
+      --muted: #ffb366;    /* softer orange */
+      --card-bg: #0a0a0a;
+      --border: #222222;
+      --accent: #ff8c00;
+      --overlay-bg: rgba(255,140,0,0.15);
+      --overlay-fg: #ffddbf;
+    }
+
+    body { font-family: Arial, system-ui; max-width: 1100px; margin: 24px auto; padding: 0 12px; background: var(--bg); color: var(--fg); }
     .row { display:flex; gap:20px; margin:12px 0; flex-wrap:wrap; align-items:center; }
-    label { font-size:12px; display:block; opacity:.9; }
+    label { font-size:12px; display:block; opacity:.95; color: var(--fg); }
     input[type=range]{ width:240px; }
-    img { max-width:100%; border-radius:6px; display:block; }
-    button{padding:8px 14px; cursor:pointer;}
+    input, select, button { color: var(--fg); background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; }
+    select { padding: 6px 8px; }
+    button { padding:8px 14px; cursor:pointer; }
     button[disabled]{ opacity:.6; cursor:not-allowed;}
+    img { max-width:100%; border-radius:6px; display:block; }
     #msg{ color:#b00; margin:8px 0; min-height:1.2em; }
     .val { min-width: 42px; display:inline-block; text-align:right; }
-    #progressWrap { display:none; align-items:center; gap:10px; }
-    .spinner { width:16px; height:16px; border:2px solid #ccc; border-top-color:#333; border-radius:50%; animation:spin .8s linear infinite;}
+    #progressWrap { display:none; align-items:center; gap:10px; color: var(--muted); }
+    .spinner { width:16px; height:16px; border:2px solid #ccc; border-top-color: var(--fg); border-radius:50%; animation:spin .8s linear infinite;}
     @keyframes spin { to{ transform:rotate(360deg)} }
-    #modWrap{ border:1px solid #e5e5e5; border-radius:10px; padding:12px; }
+
+    #modWrap{ border:1px solid var(--border); border-radius:10px; padding:12px; background: var(--card-bg); }
     #curveArea{ display:flex; flex-direction:column; align-items:center; }
-    #curveCanvas{ width: 900px; height: 240px; }
+    #curveCanvas{ width: 900px; height: 240px; background: var(--bg); }
     #slidersRow{ display:flex; justify-content:space-between; width:900px; margin-top:14px; }
     .knobCol{ display:flex; flex-direction:column; align-items:center; user-select:none; }
     .knobCol input[type=range]{ writing-mode: bt-lr; -webkit-appearance: slider-vertical; height: 150px; width: 28px; }
-    .knobLabel{ font-size:11px; margin-top:6px; }
+    .knobLabel{ font-size:11px; margin-top:6px; color: var(--muted); }
+
     .grid2{ display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; }
-    .imgCard{ position:relative; border:1px solid #e5e5e5; border-radius:10px; padding:10px; }
-    .imgTitle{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-    .overlayBox{ position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.6); color:#fff; padding:6px 8px; font-size:12px; border-radius:6px; max-width:55%; line-height:1.25; display:none; }
+    .imgCard{ position:relative; border:1px solid var(--border); border-radius:10px; padding:10px; background: var(--card-bg); }
+    .imgTitle{ display:flex; align-items:center; gap:8px; margin-bottom:8px; color: var(--fg); }
+    .overlayBox{
+      position:absolute; top:10px; right:10px;
+      background: var(--overlay-bg);
+      color: var(--overlay-fg);
+      padding:6px 8px; font-size:12px; border-radius:6px; max-width:55%; line-height:1.25; display:none;
+    }
     .hide { display:none !important; }
-    .sectionTitle { font-weight: 700; margin-top: 8px; }
-    #musicNote { font-size:12px; color:#666; }
+    .sectionTitle { font-weight: 700; margin-top: 8px; color: var(--fg); }
+    #musicNote { font-size:12px; color: var(--muted); }
+    .pill { padding:6px 10px; border-radius:20px; border:1px solid var(--border); background: var(--card-bg); color: var(--fg); }
   </style>
 </head>
 <body>
   <h2>Adaptive Equalizer</h2>
 
-  <!-- 🎵 Background music toggle -->
+  <!-- Row: Music + Theme -->
   <div class="row">
-    <label><input type="checkbox" id="bgmToggle"> Enable background music</label>
+    <label class="pill"><input type="checkbox" id="bgmToggle"> Enable background music</label>
     <span id="musicNote" class="hide">Autoplay was blocked — toggle to start.</span>
-    <audio id="bgm" src="/static/Soil Festivities.mp3" loop preload="auto"></audio>
+
+    <div class="pill">
+      <label style="display:inline; margin-right:8px;">Screen mode</label>
+      <select id="themeSelect">
+        <option value="bright" selected>Bright</option>
+        <option value="dark">Dark</option>
+      </select>
+    </div>
+
+    <!-- Hidden audio element; src set in JS based on theme -->
+    <audio id="bgm" loop preload="auto" playsinline></audio>
   </div>
 
-  <!-- 1) Load image -->
+  <!-- Load image -->
   <div class="row">
     <div>
       <label>Upload image</label>
@@ -52,7 +96,7 @@
     </div>
   </div>
 
-  <!-- 2) Controls - Modulation FIRST -->
+  <!-- Modulation -->
   <div class="sectionTitle">Modulation</div>
   <div class="row">
     <label><input type="checkbox" id="enable_mod"/> enable modulation</label>
@@ -74,7 +118,7 @@
     </div>
   </div>
 
-  <!-- Equalization SECOND -->
+  <!-- Equalization -->
   <div class="sectionTitle">Equalization</div>
   <div class="row">
     <label><input type="checkbox" id="enable_eq"/> enable equalization</label>
@@ -103,7 +147,7 @@
     </div>
   </div>
 
-  <!-- 3) Process -->
+  <!-- Process -->
   <div class="row">
     <button id="processBtn" class="hide" disabled>Process</button>
     <a id="downloadLinkOut" style="display:none;margin-left:8px;">Download Output</a>
@@ -129,7 +173,6 @@
     </div>
   </div>
 
-  <!-- Main logic -->
   <script src="/static/script.js"></script>
 </body>
 </html>
