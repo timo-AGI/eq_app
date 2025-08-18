@@ -7,58 +7,13 @@ function syncVal(id){
   if (span) span.textContent = (+v).toFixed(2);
 }
 
-// ---------- Music toggle ----------
-(async function initMusic(){
-  const audio = document.getElementById('bgm');
-  const toggle = document.getElementById('bgmToggle');
-  const note = document.getElementById('musicNote');
+// ---------- Global refs ----------
+const bodyEl = document.body;
+const themeSelect = document.getElementById('themeSelect');
+const audio  = document.getElementById('bgm');
+const toggle = document.getElementById('bgmToggle');
+const note   = document.getElementById('musicNote');
 
-  const saved = localStorage.getItem('bgmEnabled') === 'false';
-  toggle.checked = false;
-
-  async function tryPlay(){
-    try { await audio.play(); note.classList.add('hide'); }
-    catch { note.classList.remove('hide'); }
-  }
-
-  if (saved) tryPlay();
-
-  toggle.addEventListener('change', async () => {
-    if (toggle.checked) {
-      localStorage.setItem('bgmEnabled', 'true');
-      await tryPlay();
-    } else {
-      localStorage.setItem('bgmEnabled', 'false');
-      audio.pause(); note.classList.add('hide');
-    }
-  });
-})();
-
-// ---------- State ----------
-let gains = [];     // control points [0..10]
-let chart = null;
-let kernels = [];   // kernel sizes for tick labels
-let nBands = 0;
-
-// ---------- Chart.js unity line plugin ----------
-const unityLine = {
-  id: 'unityLine',
-  afterDraw(chart, args, opts) {
-    const yScale = chart.scales.y;
-    const ctx = chart.ctx;
-    const y = yScale.getPixelForValue(1);
-    ctx.save();
-    ctx.strokeStyle = '#888';
-    ctx.setLineDash([5,4]);
-    ctx.beginPath();
-    ctx.moveTo(chart.chartArea.left, y);
-    ctx.lineTo(chart.chartArea.right, y);
-    ctx.stroke();
-    ctx.restore();
-  }
-};
-
-// ---------- DOM refs ----------
 const fileInput = document.getElementById('fileInput');
 const processBtn = document.getElementById('processBtn');
 const origCard = document.getElementById('origCard');
@@ -86,7 +41,91 @@ const preserve_mean = document.getElementById('preserve_mean');
 
 const progressWrap = document.getElementById('progressWrap');
 
-// ---------- Events ----------
+// ---------- Music toggle (start OFF by default) ----------
+function setNote(txt = "", isError = false) {
+  note.textContent = txt;
+  note.classList.toggle('hide', !txt);
+  note.style.color = isError ? '#b00' : 'var(--muted)';
+}
+
+// Always start unchecked
+toggle.checked = false;
+
+// pick audio source based on theme
+function currentThemeBgmSrc(){
+  const mode = themeSelect.value;
+  return (mode === 'dark') ? '/static/bgm_dark.mp3' : '/static/bgm_light.mp3';
+}
+
+// switch audio file (if playing, continue playing new file)
+async function switchBgmForTheme(){
+  const wasPlaying = !audio.paused && !audio.ended;
+  audio.pause();
+  audio.src = currentThemeBgmSrc();
+  audio.load();
+  if (toggle.checked && wasPlaying){
+    try {
+      await audio.play();
+      setNote('Playing…');
+    } catch (e) {
+      setNote('Autoplay blocked — toggle again.', true);
+      toggle.checked = false;
+    }
+  } else {
+    setNote('');
+  }
+}
+
+toggle.addEventListener('change', async () => {
+  if (toggle.checked) {
+    audio.src = currentThemeBgmSrc();
+    audio.muted = false;
+    audio.volume = 0.5;
+    audio.currentTime = 0;
+    audio.load();
+    try {
+      await audio.play();
+      setNote('Playing…');
+    } catch (e) {
+      setNote('Autoplay blocked — toggle again.', true);
+      toggle.checked = false;
+    }
+  } else {
+    audio.pause();
+    setNote('');
+  }
+});
+
+// ---------- Theme handling ----------
+let chart = null;        // Chart.js instance
+let gains = [];          // modulation controls
+let kernels = [];        // kernel sizes for x ticks
+let nBands = 0;
+
+function applyTheme(){
+  const mode = themeSelect.value;
+  bodyEl.classList.toggle('theme-dark', mode === 'dark');
+
+  // Recolor chart axes/labels/grid
+  if (chart){
+    const fg = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#111';
+    const grid = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#e5e5e5';
+    chart.options.scales.x.ticks.color = fg;
+    chart.options.scales.y.ticks.color = fg;
+    chart.options.scales.x.grid.color = grid;
+    chart.options.scales.y.grid.color = grid;
+    chart.options.scales.x.title.color = fg;
+    chart.options.scales.y.title.color = fg;
+    chart.update();
+  }
+
+  // swap music file to match theme
+  switchBgmForTheme();
+}
+
+themeSelect.addEventListener('change', applyTheme);
+
+// ---------- App logic ----------
 fileInput.addEventListener('change', onImageChosen);
 enableMod.addEventListener('change', () => { toggleSection(modWrap, enableMod.checked); updateProcessEnabled(); if (enableMod.checked){ if (!gains.length) applyKnobs(); else { renderChart(); updateChartData(); } }});
 enableEq.addEventListener('change',  () => { toggleSection(eqWrap,  enableEq.checked); updateProcessEnabled(); });
@@ -95,7 +134,6 @@ alpha.addEventListener('input', () => syncVal('alpha'));
 gamma.addEventListener('input', () => syncVal('gamma'));
 processBtn.addEventListener('click', process);
 
-// ---------- UI logic ----------
 function toggleSection(el, on){ el.classList.toggle('hide', !on); }
 function canProcess(){
   const hasImage = !!fileInput.files.length;
@@ -114,8 +152,7 @@ function onImageChosen(){
   origCard.classList.toggle('hide', !hasImage);
   processBtn.classList.toggle('hide', !hasImage);
   if(hasImage){
-    const url=URL.createObjectURL(f);
-    imgOriginal.src = url;
+    imgOriginal.src = URL.createObjectURL(f);
   }else{
     imgOriginal.src = "";
   }
@@ -127,7 +164,24 @@ function setBusy(b){
   progressWrap.style.display = b ? 'inline-flex' : 'none';
 }
 
-// ---------- Modulation controls ----------
+// ---------- Modulation controls + Chart ----------
+const unityLine = {
+  id: 'unityLine',
+  afterDraw(chart, args, opts) {
+    const yScale = chart.scales.y;
+    const ctx = chart.ctx;
+    const y = yScale.getPixelForValue(1);
+    ctx.save();
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#888';
+    ctx.setLineDash([5,4]);
+    ctx.beginPath();
+    ctx.moveTo(chart.chartArea.left, y);
+    ctx.lineTo(chart.chartArea.right, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+
 function applyKnobs(){
   const N = Math.max(3, Math.min(10, parseInt(nControlsEl.value||5,10)));
   gains = Array(N).fill(1.0);
@@ -182,6 +236,10 @@ function renderChart(){
   const ctx = curveCanvas.getContext('2d');
   if (chart){ chart.destroy(); }
   const nb = nBands || gains.length;
+
+  const fg = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#111';
+  const grid = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#e5e5e5';
+
   chart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -197,6 +255,7 @@ function renderChart(){
         x: {
           type: 'linear', min: 0, max: Math.max(0, nb-1),
           ticks: {
+            color: fg,
             callback: (val) => {
               const idx = Math.round(val);
               if (idx < 0) return '';
@@ -208,9 +267,10 @@ function renderChart(){
               }
             }
           },
-          title:{display:true, text:'Bands'}
+          grid: { color: grid },
+          title:{display:true, text:'Bands', color: fg}
         },
-        y: { min: 0, max: 10, title:{display:true, text:'Gain (0..10)'} }
+        y: { min: 0, max: 10, title:{display:true, text:'Gain (0..10)', color: fg}, ticks: { color: fg }, grid: { color: grid } }
       },
       plugins: { legend: { display: false } }
     }
@@ -270,7 +330,6 @@ async function process(){
       fd.append("band_sign", band_sign.value);
       fd.append("preserve_mean", preserve_mean.checked ? "true" : "false");
     } else {
-      // still passed to pipeline, but overlay suppressed server-side when EQ is off
       fd.append("preserve_mean", preserve_mean.checked ? "true" : "false");
     }
 
@@ -297,7 +356,7 @@ async function process(){
 
     downloadLinkOut.href = outUrl; downloadLinkOut.download = "output.png"; downloadLinkOut.style.display = "inline";
 
-    // Overlay (NO preserve_mean when only modulation)
+    // Overlay text
     const p = data.params || {};
     let overlay = "";
     if (p.do_equalize){
@@ -334,7 +393,14 @@ function setOverlayOut(text, show){
 
 // ---------- Init ----------
 function init(){
-  // start hidden/disabled correctly
+  // Start in BRIGHT mode
+  themeSelect.value = 'bright';
+  applyTheme();
+
+  // Start with music OFF
+  toggle.checked = false;
+
+  // init UI
   updateProcessEnabled();
   syncVal('alpha'); syncVal('gamma');
 }
