@@ -50,56 +50,76 @@ const outputImage = $("outputImage");
 let gains = []; // modulation control points
 
 // =====================
-// Theme + Music
+// Theme + Music (no awaits before play)
 // =====================
 function currentThemeMusicUrl() {
-  const mode = themeSelector.value === "dark" ? "dark" : "light";
-  const endpoint = mode === "dark" ? "/music/dark" : "/music/light";
-  const staticUrl = mode === "dark" ? "/static/bgm_dark.mp3" : "/static/bgm_light.mp3";
-  const t = Date.now();
-  return { endpoint: `${endpoint}?v=${t}`, fallback: `${staticUrl}?v=${t}` };
+  const dark = themeSelector.value === "dark";
+  return {
+    endpoint: dark ? "/music/dark" : "/music/light",
+    fallback: dark ? "/static/bgm_dark.mp3" : "/static/bgm_light.mp3",
+  };
 }
 
-async function setAudioSrcForTheme(autoPlayIfChecked = true) {
-  const { endpoint, fallback } = currentThemeMusicUrl();
-  let src = endpoint;
-  if (!(await headExists(endpoint))) {
-    if (await headExists(fallback)) src = fallback;
-    else {
-      audioEl.pause();
-      audioEl.removeAttribute("src");
-      musicCheckbox.checked = false;
-      setMsg("Background music not found for this theme.");
-      return;
+// Try endpoint first; if it errors, swap to fallback automatically.
+function wireAudioErrorFallback() {
+  audioEl.addEventListener("error", () => {
+    const { fallback } = currentThemeMusicUrl();
+    if (!audioEl.dataset._fellBack) {
+      audioEl.dataset._fellBack = "1";
+      audioEl.src = fallback + "?v=" + Date.now();
+      audioEl.load();
+      // if we were trying to play, keep trying
+      audioEl.play().catch(() => {/* ignore; user may need to click again */});
     }
-  }
-  const wasPlaying = !audioEl.paused && !audioEl.ended;
-  audioEl.pause();
-  audioEl.src = src;
+  });
+}
+wireAudioErrorFallback();
+
+function setThemeClasses() {
+  const dark = themeSelector.value === "dark";
+  document.body.classList.toggle("bright-mode", !dark);
+  document.body.classList.toggle("dark-mode", dark);
+  document.body.classList.toggle("theme-dark", dark);
+}
+
+function startMusicForTheme() {
+  // IMPORTANT: no awaits here — keep the user activation alive
+  const { endpoint } = currentThemeMusicUrl();
+  audioEl.dataset._fellBack = ""; // reset fallback flag
+  audioEl.src = endpoint + "?v=" + Date.now();
   audioEl.load();
+  audioEl.muted = false;
+  audioEl.volume = 0.8;
+  audioEl.play().then(() => {
+    setMsg && setMsg("Music playing.");
+  }).catch(() => {
+    // Browser still blocked it; user may need to click once more
+    setMsg && setMsg("Autoplay blocked — click the music checkbox again.");
+    musicCheckbox.checked = false;
+  });
+}
 
-  if ((musicCheckbox.checked || wasPlaying) && autoPlayIfChecked) {
-    try {
-      audioEl.muted = false;
-      audioEl.volume = 0.8;
-      await audioEl.play();
-      setMsg("Music playing.");
-    } catch {
-      musicCheckbox.checked = false;
-      setMsg("Autoplay blocked — click the music checkbox again to start.");
-      console.warn("Autoplay blocked — user must click the music checkbox to start playback.");
-    }
+themeSelector.addEventListener("change", () => {
+  setThemeClasses();
+  if (musicCheckbox.checked) {
+    // change track immediately, still no awaits
+    startMusicForTheme();
   }
-}
+});
 
-function applyTheme() {
-  const mode = themeSelector.value === "dark" ? "dark" : "bright";
-  document.body.classList.toggle("bright-mode", mode === "bright");
-  document.body.classList.toggle("dark-mode", mode === "dark");
-  document.body.classList.toggle("theme-dark", mode === "dark");
-  setAudioSrcForTheme(true);
-}
+musicCheckbox.addEventListener("change", () => {
+  if (musicCheckbox.checked) {
+    startMusicForTheme(); // no awaits, called directly on click
+  } else {
+    audioEl.pause();
+    setMsg && setMsg("Music stopped.");
+  }
+});
 
+// Init theme once (don’t auto-play)
+(function initThemeOnce(){
+  setThemeClasses();
+})();
 // =====================
 // Image upload + UI gating
 // =====================
